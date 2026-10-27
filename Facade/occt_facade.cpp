@@ -67,11 +67,19 @@
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
 
-struct MCFacadeShape {
-  TopoDS_Shape shape;
-};
+// MCFacadeShape itself is defined in occt_facade.h (a single opaque
+// void* member, so Swift's ClangImporter can import the type). The
+// pointer holds a heap TopoDS_Shape owned by the handle.
 
 namespace {
+
+// Accessor for the wrapped shape (the handle's _impl points to it).
+TopoDS_Shape& shapeOf(MCFacadeShape* h) {
+  return *static_cast<TopoDS_Shape*>(h->_impl);
+}
+const TopoDS_Shape& shapeOf(const MCFacadeShape* h) {
+  return *static_cast<const TopoDS_Shape*>(h->_impl);
+}
 
 thread_local std::string g_lastError;
 
@@ -88,7 +96,7 @@ MCFacadeShape* wrap(const TopoDS_Shape& s, int* err) {
   }
   if (err) *err = MC_OK;
   auto* h = new MCFacadeShape();
-  h->shape = s;
+  h->_impl = new TopoDS_Shape(s);
   return h;
 }
 
@@ -329,7 +337,7 @@ MCFacadeShape* booleanOp(MCFacadeShape* a, MCFacadeShape* b, int* err,
     return nullptr;
   }
   try {
-    Maker mk(a->shape, b->shape);
+    Maker mk(shapeOf(a), shapeOf(b));
     mk.Build();
     if (!mk.IsDone()) {
       fail(err, MC_ERR_OCCT, std::string(what) + ": builder not done");
@@ -351,7 +359,7 @@ MCFacadeShape* edgeOp(MCFacadeShape* s, double value, bool isFillet,
   }
   try {
     NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> edgeMap;
-    TopExp::MapShapes(s->shape, TopAbs_EDGE, edgeMap);
+    TopExp::MapShapes(shapeOf(s), TopAbs_EDGE, edgeMap);
     std::vector<int> idx;
     if (edgeIndices && edgeCount > 0) {
       for (int i = 0; i < edgeCount; ++i) idx.push_back(edgeIndices[i]);
@@ -360,7 +368,7 @@ MCFacadeShape* edgeOp(MCFacadeShape* s, double value, bool isFillet,
     }
     TopoDS_Shape result;
     if (isFillet) {
-      BRepFilletAPI_MakeFillet mk(s->shape);
+      BRepFilletAPI_MakeFillet mk(shapeOf(s));
       for (int i : idx) {
         if (i < 0 || i >= edgeMap.Extent()) {
           fail(err, MC_ERR_INVALID_ARG, "edge index out of range");
@@ -375,7 +383,7 @@ MCFacadeShape* edgeOp(MCFacadeShape* s, double value, bool isFillet,
       }
       result = mk.Shape();
     } else {
-      BRepFilletAPI_MakeChamfer mk(s->shape);
+      BRepFilletAPI_MakeChamfer mk(shapeOf(s));
       for (int i : idx) {
         if (i < 0 || i >= edgeMap.Extent()) {
           fail(err, MC_ERR_INVALID_ARG, "edge index out of range");
@@ -699,7 +707,7 @@ MCFacadeShape* mc_prism_face(MCFacadeShape* face, const double dir[3],
     fail(err, MC_ERR_INVALID_ARG, "mc_prism_face: null argument");
     return nullptr;
   }
-  if (face->shape.ShapeType() != TopAbs_FACE) {
+  if (shapeOf(face).ShapeType() != TopAbs_FACE) {
     fail(err, MC_ERR_INVALID_ARG, "mc_prism_face: handle is not a face");
     return nullptr;
   }
@@ -710,7 +718,7 @@ MCFacadeShape* mc_prism_face(MCFacadeShape* face, const double dir[3],
       return nullptr;
     }
     v.Normalize();
-    BRepPrimAPI_MakePrism mk(face->shape, v.Multiplied(dist));
+    BRepPrimAPI_MakePrism mk(shapeOf(face), v.Multiplied(dist));
     mk.Build();
     return wrap(mk.Shape(), err);
   } catch (const Standard_Failure& e) {
@@ -754,7 +762,7 @@ MCFacadeShape* mc_shell(MCFacadeShape* s, double thickness, int* err) {
     BRepOffsetAPI_MakeThickSolid mk;
     NCollection_List<TopoDS_Shape> noOpenings;
     // Negative offset: walls grow inward, outside dimensions kept.
-    mk.MakeThickSolidByJoin(s->shape, noOpenings, -thickness,
+    mk.MakeThickSolidByJoin(shapeOf(s), noOpenings, -thickness,
                             Precision::Confusion());
     mk.Build();
     if (!mk.IsDone()) {
@@ -770,7 +778,7 @@ MCFacadeShape* mc_shell(MCFacadeShape* s, double thickness, int* err) {
     // the facade computes no geometry of its own.
     BRepAlgoAPI_Cut cut;
     NCollection_List<TopoDS_Shape> args, tools;
-    args.Append(s->shape);
+    args.Append(shapeOf(s));
     tools.Append(mk.Shape());
     cut.SetArguments(args);
     cut.SetTools(tools);
@@ -796,7 +804,7 @@ double mc_volume(MCFacadeShape* s, int* err) {
   }
   try {
     GProp_GProps props;
-    BRepGProp::VolumeProperties(s->shape, props);
+    BRepGProp::VolumeProperties(shapeOf(s), props);
     if (err) *err = MC_OK;
     return props.Mass();
   } catch (const Standard_Failure& e) {
@@ -812,7 +820,7 @@ double mc_face_area(MCFacadeShape* s, int* err) {
   }
   try {
     GProp_GProps props;
-    BRepGProp::SurfaceProperties(s->shape, props);
+    BRepGProp::SurfaceProperties(shapeOf(s), props);
     if (err) *err = MC_OK;
     return props.Mass();
   } catch (const Standard_Failure& e) {
@@ -829,7 +837,7 @@ int mc_bbox(MCFacadeShape* s, double out[6], int* err) {
     Bnd_Box box;
     // AddOptimal: the exact, tight box from the geometry itself.
     // (BRepBndLib::Add inflates by triangulation gap + tolerance.)
-    BRepBndLib::AddOptimal(s->shape, box, Standard_False,
+    BRepBndLib::AddOptimal(shapeOf(s), box, Standard_False,
                            Standard_False);
     if (box.IsVoid()) {
       return fail(err, MC_ERR_EMPTY_RESULT, "bounding box is void");
@@ -849,7 +857,7 @@ int mc_edge_count(MCFacadeShape* s, int* err) {
     return -1;
   }
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> edgeMap;
-  TopExp::MapShapes(s->shape, TopAbs_EDGE, edgeMap);
+  TopExp::MapShapes(shapeOf(s), TopAbs_EDGE, edgeMap);
   if (err) *err = MC_OK;
   return edgeMap.Extent();
 }
@@ -861,7 +869,7 @@ int mc_contains(MCFacadeShape* s, double x, double y, double z, int* err) {
   }
   try {
     BRepClass3d_SolidClassifier cls;
-    cls.Load(s->shape);
+    cls.Load(shapeOf(s));
     cls.Perform(gp_Pnt(x, y, z), 1e-7);
     if (err) *err = MC_OK;
     return cls.State() == TopAbs_IN ? 1 : 0;
@@ -886,17 +894,17 @@ int mc_shape_counts(MCFacadeShape* s, int* faces, int* edges,
   try {
     if (faces) {
       NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> m;
-      TopExp::MapShapes(s->shape, TopAbs_FACE, m);
+      TopExp::MapShapes(shapeOf(s), TopAbs_FACE, m);
       *faces = m.Extent();
     }
     if (edges) {
       NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> m;
-      TopExp::MapShapes(s->shape, TopAbs_EDGE, m);
+      TopExp::MapShapes(shapeOf(s), TopAbs_EDGE, m);
       *edges = m.Extent();
     }
     if (vertices) {
       NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> m;
-      TopExp::MapShapes(s->shape, TopAbs_VERTEX, m);
+      TopExp::MapShapes(shapeOf(s), TopAbs_VERTEX, m);
       *vertices = m.Extent();
     }
     if (err) *err = MC_OK;
@@ -915,7 +923,7 @@ int mc_face_info(MCFacadeShape* s, int faceIndex, double* area,
   }
   try {
     NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> faceMap;
-    TopExp::MapShapes(s->shape, TopAbs_FACE, faceMap);
+    TopExp::MapShapes(shapeOf(s), TopAbs_FACE, faceMap);
     if (faceIndex < 0 || faceIndex >= faceMap.Extent()) {
       return fail(err, MC_ERR_INVALID_ARG, "face index out of range");
     }
@@ -961,7 +969,7 @@ int mc_edge_info(MCFacadeShape* s, int edgeIndex, int* curveType,
   }
   try {
     NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> edgeMap;
-    TopExp::MapShapes(s->shape, TopAbs_EDGE, edgeMap);
+    TopExp::MapShapes(shapeOf(s), TopAbs_EDGE, edgeMap);
     if (edgeIndex < 0 || edgeIndex >= edgeMap.Extent()) {
       return fail(err, MC_ERR_INVALID_ARG, "edge index out of range");
     }
@@ -1025,12 +1033,12 @@ int mc_tessellate(MCFacadeShape* s, double deflectionMM, MCFacadeMesh* out,
   }
   std::memset(out, 0, sizeof(*out));
   try {
-    BRepMesh_IncrementalMesh mesher(s->shape, deflectionMM, Standard_False,
+    BRepMesh_IncrementalMesh mesher(shapeOf(s), deflectionMM, Standard_False,
                                     0.5, Standard_True);
     mesher.Perform();
 
     NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> faceMap;
-    TopExp::MapShapes(s->shape, TopAbs_FACE, faceMap);
+    TopExp::MapShapes(shapeOf(s), TopAbs_FACE, faceMap);
     const int faceCount = faceMap.Extent();
 
     std::vector<float> positions;
@@ -1121,6 +1129,10 @@ void mc_free_mesh(MCFacadeMesh* m) {
   std::memset(m, 0, sizeof(*m));
 }
 
-void mc_free_shape(MCFacadeShape* s) { delete s; }
+void mc_free_shape(MCFacadeShape* s) {
+  if (!s) return;
+  delete static_cast<TopoDS_Shape*>(s->_impl);
+  delete s;
+}
 
 }  // extern "C"

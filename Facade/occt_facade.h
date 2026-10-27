@@ -24,8 +24,15 @@
 extern "C" {
 #endif
 
-/// Opaque shape handle (wraps a TopoDS_Shape).
-typedef struct MCFacadeShape MCFacadeShape;
+/// Opaque shape handle (wraps a TopoDS_Shape). The struct is given a
+/// complete definition — a single façade-private pointer — because
+/// Swift's ClangImporter does not import incomplete C structs: with
+/// only a forward declaration, Swift cannot name the type at all
+/// ("cannot find type 'MCFacadeShape' in scope"). The pointer is an
+/// implementation detail; callers must treat the handle as opaque.
+typedef struct MCFacadeShape {
+  void* _impl;  ///< façade-private (points to a TopoDS_Shape)
+} MCFacadeShape;
 
 typedef enum MCFacadeError {
   MC_OK = 0,
