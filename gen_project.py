@@ -145,12 +145,14 @@ def esc(s):
 
 
 def q(s):
-    # NOTE: parentheses must NOT be in the unquoted-safe set. Xcode's
-    # pbxproj reader treats ( ) as structural tokens, so a value like
-    # $(SRCROOT)/OCCT/... emitted unquoted makes the whole project
-    # unreadable ("damaged / parse error", CI run 40523884420).
-    # Xcode's own serializer quotes such values; do the same.
-    if s and all(c.isalnum() or c in "_./$+-" for c in s):
+    # Conservative quoting: Xcode's old-style plist reader accepts only a
+    # small character set in unquoted strings. Values like $(SRCROOT)/...
+    # (parens are structural) or gnu++17 (+ is outside the safe set) must
+    # be quoted — Xcode's own serializer quotes them too. An unquoted
+    # offender makes the whole project unreadable ("damaged / parse
+    # error", CI runs 40523884420 and 40525621518). Quote anything that
+    # is not plain [A-Za-z0-9_./-].
+    if s and all(c.isalnum() or c in "_./-" for c in s):
         return s
     return '"' + esc(s) + '"'
 
@@ -581,6 +583,20 @@ def main():
     os.makedirs(schemes_dir, exist_ok=True)
     with open(os.path.join(schemes_dir, "CascadeDemo.xcscheme"), "w") as f:
         f.write(scheme)
+
+    # Every Xcode-created .xcodeproj bundle contains an internal
+    # workspace file; emit the canonical one so the bundle is
+    # structurally identical to an Xcode-created project.
+    ws_dir = os.path.join(PROJ_DIR, "project.xcworkspace")
+    os.makedirs(ws_dir, exist_ok=True)
+    with open(os.path.join(ws_dir, "contents.xcworkspacedata"), "w") as f:
+        f.write('<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<Workspace\n'
+                '   version = "1.0">\n'
+                '   <FileRef\n'
+                '      location = "self:">\n'
+                '   </FileRef>\n'
+                '</Workspace>\n')
 
     print(f"sources={len(OCCT_SOURCES)} headers={len(OCCT_HEADERS)} "
           f"header_dirs={len(HEADER_DIRS)} lines={len(out)}")
