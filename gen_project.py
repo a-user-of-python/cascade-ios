@@ -145,7 +145,12 @@ def esc(s):
 
 
 def q(s):
-    if s and all(c.isalnum() or c in "_./$()+-" for c in s):
+    # NOTE: parentheses must NOT be in the unquoted-safe set. Xcode's
+    # pbxproj reader treats ( ) as structural tokens, so a value like
+    # $(SRCROOT)/OCCT/... emitted unquoted makes the whole project
+    # unreadable ("damaged / parse error", CI run 40523884420).
+    # Xcode's own serializer quotes such values; do the same.
+    if s and all(c.isalnum() or c in "_./$+-" for c in s):
         return s
     return '"' + esc(s) + '"'
 
