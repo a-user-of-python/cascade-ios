@@ -12,6 +12,20 @@ only passes calls and data through to OCCT and catches its errors.
 No CAD logic of ours exists in C++; if OCCT has an operation, the
 façade wraps it instead of approximating it.
 
+## License
+
+- The `OCCT/` directory is **Open CASCADE Technology 8.0.1**,
+  © Open Cascade SAS, licensed under the **GNU LGPL 2.1 with the
+  Open CASCADE exception**. The license texts ship in the tree at
+  `OCCT/LICENSE_LGPL_21.txt` and `OCCT/OCCT_LGPL_EXCEPTION.txt` and
+  must always ship with it.
+- The project's own code — `Facade/`, `DemoApp/` and
+  `gen_project.py` — is separate work that links the OCCT libraries
+  through the façade.
+- **No OCCT library sources have been modified.** The single
+  generated header, `OCCT/generated/Standard_Version.hxx`, ships
+  exactly as OCCT's own build generates it.
+
 ## What you get
 
 - **CascadeKit** — a static library target: the OCCT subset sources

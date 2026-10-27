@@ -74,6 +74,13 @@ struct ContentView: View {
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
+
+            // License attribution — travels with the app.
+            Text("Geometry: Open CASCADE Technology 8.0.1 — LGPL 2.1 with the Open CASCADE exception. © Open Cascade SAS.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(2)
         }
         .padding(16)
         .fullScreenCover(isPresented: $showSketchEditor, onDismiss: sketchEditorDismissed) {
