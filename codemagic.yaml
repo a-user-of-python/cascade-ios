@@ -1,0 +1,35 @@
+# Codemagic workflow — builds CascadeDemo into an UNSIGNED .ipa.
+# Signing/install afterwards is Sean's usual Signulous flow.
+# Free tier (individual account): 500 macOS M2 minutes/month.
+workflows:
+  cascade-demo-ipa:
+    name: Cascade Demo IPA (unsigned)
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+    scripts:
+      - name: Build CascadeDemo for iOS (unsigned)
+        script: |
+          set -e
+          xcodebuild build \
+            -project CascadePort.xcodeproj \
+            -scheme CascadeDemo \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+      - name: Package unsigned IPA
+        script: |
+          set -e
+          APP_PATH=$(find build/DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)
+          echo "Packaging: $APP_PATH"
+          rm -rf build/ipa
+          mkdir -p build/ipa/Payload
+          cp -R "$APP_PATH" build/ipa/Payload/
+          cd build/ipa
+          zip -r ../CascadeDemo-unsigned.ipa Payload
+    artifacts:
+      - build/CascadeDemo-unsigned.ipa

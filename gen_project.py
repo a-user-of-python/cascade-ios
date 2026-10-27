@@ -497,6 +497,86 @@ def main():
     os.makedirs(PROJ_DIR, exist_ok=True)
     with open(os.path.join(PROJ_DIR, "project.pbxproj"), "w") as f:
         f.write("\n".join(out) + "\n")
+
+    # Shared scheme for the demo app: headless builders (Codemagic, CI
+    # xcodebuild) can only see shared schemes — Xcode auto-creates user
+    # schemes on a Mac, but a cloud build has none until one is committed.
+    buildable = (
+        '            <BuildableReference\n'
+        '               BuildableIdentifier = "primary"\n'
+        f'               BlueprintIdentifier = "{APP_TARGET}"\n'
+        '               BuildableName = "CascadeDemo.app"\n'
+        '               BlueprintName = "CascadeDemo"\n'
+        '               ReferencedContainer = "container:CascadePort.xcodeproj">\n'
+        '            </BuildableReference>')
+    scheme = f'''<?xml version="1.0" encoding="UTF-8"?>
+<Scheme
+   LastUpgradeVersion = "1600"
+   version = "1.7">
+   <BuildAction
+      parallelizeBuildables = "YES"
+      buildImplicitDependencies = "YES"
+      buildArchitectures = "Automatic">
+      <BuildActionEntries>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+{buildable}
+         </BuildActionEntry>
+      </BuildActionEntries>
+   </BuildAction>
+   <TestAction
+      buildConfiguration = "Debug"
+      selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
+      selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
+      shouldUseLaunchSchemeArgsEnv = "YES"
+      shouldAutocreateTestPlan = "YES">
+      <Testables>
+      </Testables>
+   </TestAction>
+   <LaunchAction
+      buildConfiguration = "Debug"
+      selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
+      selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
+      launchStyle = "0"
+      useCustomWorkingDirectory = "NO"
+      ignoresPersistentStateOnLaunch = "NO"
+      debugDocumentVersioning = "YES"
+      debugServiceExtension = "internal"
+      allowLocationSimulation = "YES">
+      <BuildableProductRunnable
+         runnableDebuggingMode = "0">
+{buildable}
+      </BuildableProductRunnable>
+   </LaunchAction>
+   <ProfileAction
+      buildConfiguration = "Release"
+      shouldUseLaunchSchemeArgsEnv = "YES"
+      savedToolIdentifier = ""
+      useCustomWorkingDirectory = "NO"
+      debugDocumentVersioning = "YES">
+      <BuildableProductRunnable
+         runnableDebuggingMode = "0">
+{buildable}
+      </BuildableProductRunnable>
+   </ProfileAction>
+   <AnalyzeAction
+      buildConfiguration = "Debug">
+   </AnalyzeAction>
+   <ArchiveAction
+      buildConfiguration = "Release"
+      revealArchiveInOrganizer = "YES">
+   </ArchiveAction>
+</Scheme>
+'''
+    schemes_dir = os.path.join(PROJ_DIR, "xcshareddata", "xcschemes")
+    os.makedirs(schemes_dir, exist_ok=True)
+    with open(os.path.join(schemes_dir, "CascadeDemo.xcscheme"), "w") as f:
+        f.write(scheme)
+
     print(f"sources={len(OCCT_SOURCES)} headers={len(OCCT_HEADERS)} "
           f"header_dirs={len(HEADER_DIRS)} lines={len(out)}")
 
