@@ -4952,6 +4952,18 @@
 		68EEEDC2100A82F68C1FBB8A /* CascadeDemoApp.swift in app-sources */ = {isa = PBXBuildFile; fileRef = BB2E78464CF460E50E1DAFB1 /* CascadeDemoApp.swift */; };
 		59AADCC132045446695020D3 /* CascadeEngine.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 9FE4E8E59AC01F3D3B03E76A /* CascadeEngine.swift */; };
 		0511C63B43980D25DBD1B2FF /* ContentView.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 21F241C0660DC6D973EE3ACF /* ContentView.swift */; };
+		698C4E2E9E695F0D90C734FE /* Math.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 31410CCD3C111A1244036EBC /* Math.swift */; };
+		63B109E882FA85A21A4FA1EF /* Sketch.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 57FF298053A365D6C29A0CA5 /* Sketch.swift */; };
+		0477944B788152049857D661 /* Solver.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 65AC8C0736C2746E8D2C2A9A /* Solver.swift */; };
+		FA8F5D79E418A6ECD1937CD5 /* Errors.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 9D4AFDCD9B2F79377507E881 /* Errors.swift */; };
+		35054ADB10F6A6664858DDDD /* MCLog.swift in app-sources */ = {isa = PBXBuildFile; fileRef = D1AD665757C4C7E4603E1E62 /* MCLog.swift */; };
+		B3F8FD2538EF898EA0982C14 /* Mesh.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 7E85ADBE9673E63A574A3C70 /* Mesh.swift */; };
+		B6EA390EAE9062244D126FF7 /* Faces.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 51D41CF6738EBB4D2DB26034 /* Faces.swift */; };
+		24533D85CE7581575D4D7E18 /* Tessellation.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 231574D3A3FA036676724988 /* Tessellation.swift */; };
+		75453CF22AA5A0E5980E13EC /* Fonts.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 6A1A63FEF8FB65D754B178A9 /* Fonts.swift */; };
+		B876D9635871377D35EB0B95 /* Accent.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 6BA775F5AC1BA600959F4E11 /* Accent.swift */; };
+		1BD23FE2CB83E05EF9FA2166 /* SketchEditorView.swift in app-sources */ = {isa = PBXBuildFile; fileRef = EB8D844C10CF96FC75C6AE45 /* SketchEditorView.swift */; };
+		62AD3C836C5E292D35DF8416 /* DemoSketchHost.swift in app-sources */ = {isa = PBXBuildFile; fileRef = D5998DDEF4A1061CC1BAFFE5 /* DemoSketchHost.swift */; };
 		5BAEC5814F7E48C0BC51D9D2 /* Assets.xcassets in app-resources */ = {isa = PBXBuildFile; fileRef = A9FF909E4B3E0F36567B6CEF /* Assets.xcassets */; };
 		797ED0FA34E91073DB3B8F4B /* libCascadeKit.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 9DE201395EF14B5D471E382D /* libCascadeKit.a */; };
 /* End PBXBuildFile section */
@@ -9912,6 +9924,18 @@
 		BB2E78464CF460E50E1DAFB1 /* CascadeDemoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CascadeDemoApp.swift; path = DemoApp/CascadeDemoApp.swift; sourceTree = SOURCE_ROOT; };
 		9FE4E8E59AC01F3D3B03E76A /* CascadeEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CascadeEngine.swift; path = DemoApp/CascadeEngine.swift; sourceTree = SOURCE_ROOT; };
 		21F241C0660DC6D973EE3ACF /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ContentView.swift; path = DemoApp/ContentView.swift; sourceTree = SOURCE_ROOT; };
+		31410CCD3C111A1244036EBC /* Math.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Math.swift; path = DemoApp/Math.swift; sourceTree = SOURCE_ROOT; };
+		57FF298053A365D6C29A0CA5 /* Sketch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Sketch.swift; path = DemoApp/Sketch.swift; sourceTree = SOURCE_ROOT; };
+		65AC8C0736C2746E8D2C2A9A /* Solver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Solver.swift; path = DemoApp/Solver.swift; sourceTree = SOURCE_ROOT; };
+		9D4AFDCD9B2F79377507E881 /* Errors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Errors.swift; path = DemoApp/Errors.swift; sourceTree = SOURCE_ROOT; };
+		D1AD665757C4C7E4603E1E62 /* MCLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCLog.swift; path = DemoApp/MCLog.swift; sourceTree = SOURCE_ROOT; };
+		7E85ADBE9673E63A574A3C70 /* Mesh.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Mesh.swift; path = DemoApp/Mesh.swift; sourceTree = SOURCE_ROOT; };
+		51D41CF6738EBB4D2DB26034 /* Faces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Faces.swift; path = DemoApp/Faces.swift; sourceTree = SOURCE_ROOT; };
+		231574D3A3FA036676724988 /* Tessellation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Tessellation.swift; path = DemoApp/Tessellation.swift; sourceTree = SOURCE_ROOT; };
+		6A1A63FEF8FB65D754B178A9 /* Fonts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Fonts.swift; path = DemoApp/Fonts.swift; sourceTree = SOURCE_ROOT; };
+		6BA775F5AC1BA600959F4E11 /* Accent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Accent.swift; path = DemoApp/Accent.swift; sourceTree = SOURCE_ROOT; };
+		EB8D844C10CF96FC75C6AE45 /* SketchEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SketchEditorView.swift; path = DemoApp/SketchEditorView.swift; sourceTree = SOURCE_ROOT; };
+		D5998DDEF4A1061CC1BAFFE5 /* DemoSketchHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DemoSketchHost.swift; path = DemoApp/DemoSketchHost.swift; sourceTree = SOURCE_ROOT; };
 		26E511A97D2BFCD51A37B2E6 /* CascadeDemo-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = CascadeDemo-Bridging-Header.h; path = DemoApp/CascadeDemo-Bridging-Header.h; sourceTree = SOURCE_ROOT; };
 		28DEB7C1EEADD833C36F42BE /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = Info.plist; path = DemoApp/Info.plist; sourceTree = SOURCE_ROOT; };
 		A9FF909E4B3E0F36567B6CEF /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = DemoApp/Assets.xcassets; sourceTree = SOURCE_ROOT; };
@@ -14915,6 +14939,18 @@
 				68EEEDC2100A82F68C1FBB8A /* CascadeDemoApp.swift in Sources */,
 				59AADCC132045446695020D3 /* CascadeEngine.swift in Sources */,
 				0511C63B43980D25DBD1B2FF /* ContentView.swift in Sources */,
+				698C4E2E9E695F0D90C734FE /* Math.swift in Sources */,
+				63B109E882FA85A21A4FA1EF /* Sketch.swift in Sources */,
+				0477944B788152049857D661 /* Solver.swift in Sources */,
+				FA8F5D79E418A6ECD1937CD5 /* Errors.swift in Sources */,
+				35054ADB10F6A6664858DDDD /* MCLog.swift in Sources */,
+				B3F8FD2538EF898EA0982C14 /* Mesh.swift in Sources */,
+				B6EA390EAE9062244D126FF7 /* Faces.swift in Sources */,
+				24533D85CE7581575D4D7E18 /* Tessellation.swift in Sources */,
+				75453CF22AA5A0E5980E13EC /* Fonts.swift in Sources */,
+				B876D9635871377D35EB0B95 /* Accent.swift in Sources */,
+				1BD23FE2CB83E05EF9FA2166 /* SketchEditorView.swift in Sources */,
+				62AD3C836C5E292D35DF8416 /* DemoSketchHost.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -19892,6 +19928,18 @@
 				BB2E78464CF460E50E1DAFB1 /* CascadeDemoApp.swift */,
 				9FE4E8E59AC01F3D3B03E76A /* CascadeEngine.swift */,
 				21F241C0660DC6D973EE3ACF /* ContentView.swift */,
+				31410CCD3C111A1244036EBC /* Math.swift */,
+				57FF298053A365D6C29A0CA5 /* Sketch.swift */,
+				65AC8C0736C2746E8D2C2A9A /* Solver.swift */,
+				9D4AFDCD9B2F79377507E881 /* Errors.swift */,
+				D1AD665757C4C7E4603E1E62 /* MCLog.swift */,
+				7E85ADBE9673E63A574A3C70 /* Mesh.swift */,
+				51D41CF6738EBB4D2DB26034 /* Faces.swift */,
+				231574D3A3FA036676724988 /* Tessellation.swift */,
+				6A1A63FEF8FB65D754B178A9 /* Fonts.swift */,
+				6BA775F5AC1BA600959F4E11 /* Accent.swift */,
+				EB8D844C10CF96FC75C6AE45 /* SketchEditorView.swift */,
+				D5998DDEF4A1061CC1BAFFE5 /* DemoSketchHost.swift */,
 				26E511A97D2BFCD51A37B2E6 /* CascadeDemo-Bridging-Header.h */,
 				28DEB7C1EEADD833C36F42BE /* Info.plist */,
 				A9FF909E4B3E0F36567B6CEF /* Assets.xcassets */,

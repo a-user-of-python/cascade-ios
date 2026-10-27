@@ -56,6 +56,20 @@ DEMO_SOURCES = [
     "DemoApp/CascadeDemoApp.swift",
     "DemoApp/CascadeEngine.swift",
     "DemoApp/ContentView.swift",
+    # MetalCAD sketch editor slice (copied kit + app sources, see
+    # DemoSketchHost.swift for the adaptation notes).
+    "DemoApp/Math.swift",
+    "DemoApp/Sketch.swift",
+    "DemoApp/Solver.swift",
+    "DemoApp/Errors.swift",
+    "DemoApp/MCLog.swift",
+    "DemoApp/Mesh.swift",
+    "DemoApp/Faces.swift",
+    "DemoApp/Tessellation.swift",
+    "DemoApp/Fonts.swift",
+    "DemoApp/Accent.swift",
+    "DemoApp/SketchEditorView.swift",
+    "DemoApp/DemoSketchHost.swift",
 ]
 DEMO_OTHER_FILES = [
     "DemoApp/CascadeDemo-Bridging-Header.h",

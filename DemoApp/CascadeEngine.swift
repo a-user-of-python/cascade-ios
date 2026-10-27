@@ -199,4 +199,171 @@ enum CascadeEngine {
             return s
         }
     }
+
+    // MARK: - MetalCAD sketch -> Cascade solid
+
+    /// Extrude a sketch from MetalCAD's real sketch editor (the
+    /// Sketch/SketchSolver slice copied into this app) through the
+    /// façade. The kit validates and structures the profiles —
+    /// `extractProfiles()` is the same call the editor's Finish
+    /// button makes, so the same coded CADError messages surface.
+    /// The sketch's entities then map 1:1 onto the façade's sketch
+    /// types (line / circle / arc — never flattened), OCCT builds
+    /// the face, and the face is prismed 10 mm along the sketch
+    /// plane's normal. With several disjoint profiles, each is
+    /// prismed on its own and the solids are united.
+    static func sketchExtrude(sketch: Sketch) throws -> Result {
+        let profiles: [Profile]
+        do {
+            profiles = try sketch.extractProfiles().profiles
+        } catch let e as CADError {
+            throw EngineError.occt("\(e.userMessage) (\(e.code))")
+        }
+        guard !profiles.isEmpty else {
+            let e = CADError.padNoProfile
+            throw EngineError.occt("\(e.userMessage) (\(e.code))")
+        }
+
+        // Group the non-construction entities into loops: a circle
+        // is a loop by itself; lines and arcs group by shared
+        // endpoints. Points and construction geometry never bound a
+        // profile (extractProfiles ignores them too).
+        var groups: [[SketchEntity]] = []
+        var chained: [SketchEntity] = []
+        for e in sketch.entities where !e.isConstruction {
+            switch e {
+            case .circle: groups.append([e])
+            case .line, .arc: chained.append(e)
+            case .point: break
+            }
+        }
+        var rest = chained
+        while !rest.isEmpty {
+            var group = [rest.removeFirst()]
+            var grew = true
+            while grew {
+                grew = false
+                let ends = group.flatMap { endpoints(of: $0) }
+                var i = 0
+                while i < rest.count {
+                    let other = endpoints(of: rest[i])
+                    if ends.contains(where: { a in other.contains { $0.distance(to: a) <= 1e-6 } }) {
+                        group.append(rest.remove(at: i))
+                        grew = true
+                    } else {
+                        i += 1
+                    }
+                }
+            }
+            groups.append(group)
+        }
+
+        // Assign each group to a kit profile loop (outer or hole) by
+        // matching a group vertex against the loop's points — the
+        // kit loops are the same entities' flattened polylines, so
+        // entity endpoints appear in them exactly.
+        struct KitLoop { var profile: Int; var isHole: Bool; var points: [Vec2] }
+        var kitLoops: [KitLoop] = []
+        for (i, p) in profiles.enumerated() {
+            kitLoops.append(KitLoop(profile: i, isHole: false, points: p.outer))
+            for h in p.holes { kitLoops.append(KitLoop(profile: i, isHole: true, points: h)) }
+        }
+        var outers: [Int: [SketchEntity]] = [:]
+        var holes: [Int: [[SketchEntity]]] = [:]
+        for group in groups {
+            let samples = samplePoints(of: group)
+            guard let loop = kitLoops.first(where: { kl in
+                kl.points.contains { p in samples.contains { $0.distance(to: p) <= 1e-4 } }
+            }) else {
+                throw EngineError.occt("One outline couldn't be matched to a closed profile. Check for gaps or duplicate lines.")
+            }
+            if loop.isHole {
+                holes[loop.profile, default: []].append(group)
+            } else {
+                outers[loop.profile, default: []].append(contentsOf: group)
+            }
+        }
+
+        let plane = sketch.plane
+        return try render {
+            var err: Int32 = 0
+            let origin: [Double] = [plane.origin.x, plane.origin.y, plane.origin.z]
+            let normal: [Double] = [plane.normal.x, plane.normal.y, plane.normal.z]
+            let xDir: [Double] = [plane.xAxis.x, plane.xAxis.y, plane.xAxis.z]
+            var result: UnsafeMutablePointer<MCFacadeShape>?
+            for i in profiles.indices {
+                guard let outer = outers[i], !outer.isEmpty else {
+                    if let r = result { mc_free_shape(r) }
+                    throw EngineError.occt("A closed profile had no matching sketch lines.")
+                }
+                var types: [Int32] = []
+                var data: [Double] = []
+                var starts: [Int32] = [0]
+                for e in outer { appendEntity(e, types: &types, data: &data) }
+                starts.append(Int32(types.count))
+                for hole in holes[i] ?? [] {
+                    for e in hole { appendEntity(e, types: &types, data: &data) }
+                    starts.append(Int32(types.count))
+                }
+                guard let face = mc_face_from_sketch(origin, normal, xDir,
+                                                     types, data, Int32(types.count),
+                                                     starts, Int32(starts.count - 1), &err) else {
+                    if let r = result { mc_free_shape(r) }
+                    throw EngineError.occt(lastError())
+                }
+                let solid = mc_prism_face(face, normal, 10, &err)
+                mc_free_shape(face)
+                guard let solid else {
+                    if let r = result { mc_free_shape(r) }
+                    throw EngineError.occt(lastError())
+                }
+                if let r = result {
+                    let united = mc_unite(r, solid, &err)
+                    mc_free_shape(r)
+                    mc_free_shape(solid)
+                    guard let united else { throw EngineError.occt(lastError()) }
+                    result = united
+                } else {
+                    result = solid
+                }
+            }
+            guard let final = result else {
+                throw EngineError.occt("Nothing to extrude.")
+            }
+            return final
+        }
+    }
+
+    private static func endpoints(of e: SketchEntity) -> [Vec2] {
+        switch e {
+        case .line(_, let a, let b, _): return [a, b]
+        case .arc: return [e.resolve(.start), e.resolve(.end)].compactMap { $0 }
+        default: return []
+        }
+    }
+
+    private static func samplePoints(of group: [SketchEntity]) -> [Vec2] {
+        var pts: [Vec2] = []
+        for e in group {
+            pts += endpoints(of: e)
+            if case .circle(_, let c, let r, _) = e { pts.append(c + Vec2(r, 0)) }
+        }
+        return pts
+    }
+
+    /// One sketch entity -> one façade entity (6-double stride):
+    /// line = type 0 (x1,y1,x2,y2), circle = type 1 (cx,cy,r),
+    /// arc = type 2 (cx,cy,r,start,end radians CCW).
+    private static func appendEntity(_ e: SketchEntity, types: inout [Int32], data: inout [Double]) {
+        switch e {
+        case .line(_, let a, let b, _):
+            types.append(0); data += [a.x, a.y, b.x, b.y, 0, 0]
+        case .circle(_, let c, let r, _):
+            types.append(1); data += [c.x, c.y, r, 0, 0, 0]
+        case .arc(_, let c, let r, let a0, let a1, _):
+            types.append(2); data += [c.x, c.y, r, a0, a1, 0]
+        case .point:
+            break
+        }
+    }
 }
