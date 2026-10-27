@@ -169,9 +169,14 @@ MCFacadeShape* mc_intersect(MCFacadeShape* a, MCFacadeShape* b, int* err);
 
 // ---------------------------------------------------------------- edge ops
 
-/// Edge indices are 0-based positions in mc_edge_count()'s order
-/// (TopExp index order over the shape's edges). Pass
-/// edgeIndices == NULL (or edgeCount <= 0) to apply to ALL edges.
+/// Edge indices are 0-based positions in the shape's edge
+/// enumeration — the shared census index space defined in the
+/// "selection census" section below (TopExp traversal order, the
+/// order mc_shape_counts / mc_edge_info / mc_edge_count report).
+/// Pass edgeIndices == NULL (or edgeCount <= 0) to apply to ALL
+/// edges; a non-null list applies to ONLY the listed edges — the
+/// list parameter IS the selective form (there are deliberately
+/// no separate *_edges functions).
 
 /// BRepFilletAPI_MakeFillet with a constant radius.
 MCFacadeShape* mc_fillet(MCFacadeShape* s, double radius,
@@ -202,6 +207,52 @@ int mc_edge_count(MCFacadeShape* s, int* err);
 /// a solid of the shape, 0 when outside or on the boundary, -1 on
 /// error (*err set). Shapes without a solid report MC_ERR_OCCT.
 int mc_contains(MCFacadeShape* s, double x, double y, double z, int* err);
+
+// ------------------------------------------------------- selection census
+// Index spaces. Faces, edges and vertices are enumerated in
+// TopExp traversal order over the shape: each distinct sub-shape
+// is taken at its first occurrence (the enumeration
+// TopExp::MapShapes records, built on TopExp_Explorer). ALL
+// index-based functions in this façade share these spaces, so
+// indices line up across calls for as long as the shape handle
+// is unchanged: face i below is the face whose triangles form
+// range i of mc_tessellate; edge i below is edge i of
+// mc_fillet / mc_chamfer, and mc_edge_count counts the same
+// space. Swift enumerates a shape once through these functions,
+// then drives selection, picking and edge finishing by index.
+//
+// The three functions below return MC_OK on success and an
+// MC_ERR_* code (also stored to *err) on failure — a bad index
+// is MC_ERR_INVALID_ARG, never a crash. Any output pointer may
+// be NULL to skip that output.
+
+/// The census: number of faces / edges / vertices of the shape
+/// (TopExp::MapShapes extents).
+int mc_shape_counts(MCFacadeShape* s, int* faces, int* edges,
+                    int* vertices, int* err);
+
+/// Per-face info for face `faceIndex` (census order): `area`
+/// (mm^2) and area centroid `center` via
+/// BRepGProp::SurfaceProperties; `isPlanar` is 1 when the face's
+/// surface is a plane (BRepAdaptor_Surface), and `normal` is
+/// then the face's outward normal (the plane axis, flipped when
+/// the face's stored orientation is reversed). For a non-planar
+/// face `normal` is (0, 0, 0).
+int mc_face_info(MCFacadeShape* s, int faceIndex, double* area,
+                 double center[3], double normal[3], int* isPlanar,
+                 int* err);
+
+/// Per-edge info for edge `edgeIndex` (census order):
+/// `curveType` is 0 = line, 1 = circle, 2 = other
+/// (BRepAdaptor_Curve); `length` via BRepGProp::LinearProperties
+/// (OCCT 8.0.1's name for the edge-properties entry point);
+/// `start` / `end` are the points of the edge's first / last
+/// vertex in traversal orientation. `center` / `radius` are the
+/// circle's own, and are only meaningful when curveType == 1 —
+/// for any other curve they are (0, 0, 0) and 0.
+int mc_edge_info(MCFacadeShape* s, int edgeIndex, int* curveType,
+                 double* length, double start[3], double end[3],
+                 double center[3], double* radius, int* err);
 
 // ---------------------------------------------------------------- tessellation
 

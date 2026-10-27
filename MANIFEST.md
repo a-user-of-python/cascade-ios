@@ -17,7 +17,10 @@ fillet, chamfer, shell/offset, tessellation with per-face ranges,
 volume / bounding-box / contains queries, and (added 2026-10-27,
 see "Sketch support" below) sketch faces built from line / circle
 / arc entities with holes, a face prism, and a face-area query.
-It implements **no CAD
+Also added 2026-10-27 (see "Selection / query layer" below): a
+shape census (face / edge / vertex counts plus per-face and
+per-edge info) in the same index space the finishing functions
+already consumed. It implements **no CAD
 feature logic and no geometry math of its own**: the C++ side only
 translates calls and data (handles in, buffers out) and catches
 OCCT exceptions at the boundary. Where OCCT has an operation, the
@@ -294,6 +297,144 @@ these calls from Swift: a 60×40 rounded-corner outline (4 lines +
 data was also run through the host proof: face area **2168.035**
 mm², volume **17344.283** mm³ — identical to the analytic value,
 so those are the numbers the button should show on-device.
+
+## Selection / query layer (added 2026-10-27)
+
+MetalCAD's selection-driven tools (Sean's rule: a tool opened
+from a selection uses the selection's actual measurements) need
+Swift to enumerate a shape's faces and edges, read their real
+geometry, and hand edge indices back to the finishing functions.
+Three façade functions were added; the 34 proof checks below were
+run with the same harness (whole suite now **111 checks, ALL
+PASS** — the original 77 unchanged):
+
+- `mc_shape_counts(shape, *faces, *edges, *vertices, err)` —
+  the census: `TopExp::MapShapes` extents for faces, edges,
+  vertices.
+- `mc_face_info(shape, faceIndex, *area, center[3], normal[3],
+  *isPlanar, err)` — area + area centroid via
+  `BRepGProp::SurfaceProperties`; planarity + outward normal via
+  `BRepAdaptor_Surface` (plane axis, flipped when the face's
+  stored orientation is reversed; for a non-planar face the
+  normal is reported as (0, 0, 0)).
+- `mc_edge_info(shape, edgeIndex, *curveType, *length,
+  start[3], end[3], center[3], *radius, err)` — curve type
+  (0 line / 1 circle / 2 other) via `BRepAdaptor_Curve`; length
+  via `BRepGProp::LinearProperties` (OCCT 8.0.1 has no
+  `BRepGProp::EdgeProperties` — LinearProperties is its name for
+  the edge entry point, and its Mass() is the length); endpoints
+  via `BRep_Tool::Pnt(TopExp::FirstVertex / LastVertex)`;
+  circle centre / radius from the adaptor's `Circle()`.
+
+**One index space, by construction.** Faces, edges and vertices
+are enumerated in TopExp traversal order (each distinct
+sub-shape at its first occurrence — the `TopExp::MapShapes`
+enumeration that `mc_edge_count`, tessellation's per-face
+ranges, and the finishing functions already used). The census
+reads from the same maps, so an index Swift learns from
+`mc_edge_info` names the same physical edge in `mc_fillet` —
+the proof demonstrates this end to end: the length L0 of edge 0
+is read through `mc_edge_info`, edge 0 alone is filleted
+through the existing `mc_fillet`, and the resulting volume
+matches the closed form for THAT edge to 0.001 mm³.
+
+**No `mc_fillet_edges` / `mc_chamfer_edges` were added** —
+`mc_fillet` / `mc_chamfer` already accept an edge index list
+(NULL = all edges), implemented by the shared `edgeOp` over the
+same map. The selective forms are proven below instead of
+duplicated.
+
+Findings from the proof, recorded exactly as measured:
+
+- **Selective finishing is exact.** Box 20×20×10, edge 0
+  (L0 = 10, read from the census): fillet r=2 on that edge only
+  → volume **3991.416** = 4000 − (2² − π·2²/4)·10, and the
+  result has exactly **7 faces**; chamfer d=1 on that edge only
+  → **3995.000** = 4000 − (1²/2)·10. Bad indices (face 999,
+  edge 999, fillet list {999}) return `MC_ERR_INVALID_ARG`,
+  never a crash.
+- **The filleted box's true census is 26 / 56 / 24** (faces /
+  edges / vertices) — NOT the 72 edges / 48 vertices an earlier
+  draft of the test expected. Composition: 6 planar faces
+  (areas 256 ×2, 96 ×4) + 12 cylindrical fillet strips (areas
+  50.265 ×8 along the 20 mm edges, 18.850 ×4 along the 10 mm
+  edges) + 8 spherical corner patches (area 2π each); edges
+  are 24 tangent lines + 24 quarter-circle arcs (r=2, length
+  π) + **8 degenerate pole edges** (length 0, start == end) —
+  one per spherical patch, an artefact of the sphere
+  parametrization (each patch is a trimmed sphere face whose
+  wire carries a pole edge), not a cell of the decomposition.
+  Euler therefore holds on the true cells: V − (E − 8) + F =
+  24 − 48 + 26 = **2**. Swift should treat a curveType-2,
+  zero-length edge as a pole artefact, not a selectable edge.
+- Box census is 6 / 12 / 8 with Euler exact; all 12 edges are
+  lines whose lengths sum to exactly 200; all 6 faces are
+  planar with areas {200, 200, 200, 200, 400, 400}, and the
+  +Z face reports centre (10, 10, 10) and normal (0, 0, 1) —
+  the outward-normal orientation convention (reverse on
+  `TopAbs_REVERSED`) confirmed empirically on all 6 faces.
+
+Proof additions (exact output of the extended run; the 12
+per-edge dump lines and the 6 identical per-face PASS lines are
+kept, as they are the enumeration record):
+
+```
+  [PASS] mc_shape_counts box
+  box census: faces=6 edges=12 vertices=8
+  [PASS] box census == 6 faces / 12 edges / 8 vertices
+  [PASS] box Euler: V - E + F == 2
+  [PASS] mc_shape_counts(null) returns an error
+  box edge 0: type=0 length=10.0 start=(0,0,0) end=(0,0,10)
+  box edge 1: type=0 length=20.0 start=(0,0,10) end=(0,20,10)
+  box edge 2: type=0 length=10.0 start=(0,20,10) end=(0,20,0)
+  box edge 3: type=0 length=20.0 start=(0,20,0) end=(0,0,0)
+  box edge 4: type=0 length=10.0 start=(20,0,10) end=(20,0,0)
+  box edge 5: type=0 length=20.0 start=(20,20,10) end=(20,0,10)
+  box edge 6: type=0 length=10.0 start=(20,20,0) end=(20,20,10)
+  box edge 7: type=0 length=20.0 start=(20,0,0) end=(20,20,0)
+  box edge 8: type=0 length=20.0 start=(0,0,0) end=(20,0,0)
+  box edge 9: type=0 length=20.0 start=(20,0,10) end=(0,0,10)
+  box edge 10: type=0 length=20.0 start=(20,20,0) end=(0,20,0)
+  box edge 11: type=0 length=20.0 start=(0,20,10) end=(20,20,10)
+  [PASS] box: all 12 edges are lines (curveType 0)
+  [PASS] box: edge endpoint distance == length for every edge
+  [PASS] box: sum of edge lengths == 200 (4*(20+20+10))
+  [PASS] mc_face_info box face  (x6, one per face)
+  box face 0: area=200.0 center=(0,10,5) normal=(-1,-0,0) planar=1
+  box face 1: area=200.0 center=(20,10,5) normal=(1,0,-0) planar=1
+  box face 2: area=200.0 center=(10,0,5) normal=(0,-1,-0) planar=1
+  box face 3: area=200.0 center=(10,20,5) normal=(-0,1,0) planar=1
+  box face 4: area=400.0 center=(10,10,0) normal=(-0,-0,-1) planar=1
+  box face 5: area=400.0 center=(10,10,10) normal=(0,0,1) planar=1
+  [PASS] box: every face isPlanar == 1
+  [PASS] box: face areas are {200,200,200,200,400,400}
+  [PASS] box: +Z face (center 10,10,10) has normal (0,0,1)
+  [PASS] mc_shape_counts filleted box
+  filleted box census: faces=26 edges=56 vertices=24
+  [PASS] filleted box census: faces == 26 (6 planar + 12 cyl + 8 sphere)
+  [PASS] filleted box census: edges == 56 (24 lines + 24 arcs + 8 degenerate)
+  [PASS] filleted box census: vertices == 24
+  [PASS] filleted box edges: 24 lines + 24 arcs + 8 degenerate pole edges
+  [PASS] filleted box Euler (degenerate pole edges excluded): V - E + F == 2
+  [PASS] filleted box faces: 8 sphere patches + 8 long + 4 short cylinder strips
+  [PASS] filleted box: census finds non-planar faces
+  [PASS] filleted box: census finds a circle edge with radius 2
+  [PASS] mc_edge_info box edge 0 (selective fillet input)
+  box edge 0 length L0 = 10.000
+  [PASS] mc_fillet ONLY edge 0 (selective)
+  volume(box, edge 0 filleted r=2) = 3991.416 (err=0)
+  [PASS] selective fillet volume == 4000 - (r^2 - pi r^2/4) * L0
+  [PASS] selective fillet shape has exactly 7 faces
+  [PASS] mc_chamfer ONLY edge 0 (selective)
+  volume(box, edge 0 chamfered d=1) = 3995.000 (err=0)
+  [PASS] selective chamfer volume == 4000 - (d^2/2) * L0
+  [PASS] mc_face_info(face 999) returns an error
+  face 999 error: face index out of range
+  [PASS] mc_edge_info(edge 999) returns an error
+  edge 999 error: edge index out of range
+  [PASS] mc_fillet(edge 999) returns an error
+RESULT: ALL PASS
+```
 
 ## Xcode project
 

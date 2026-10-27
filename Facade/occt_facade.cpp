@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
@@ -40,7 +42,9 @@
 #include <GC_MakeArcOfCircle.hxx>
 #include <GC_MakeSegment.hxx>
 #include <GProp_GProps.hxx>
+#include <GeomAbs_CurveType.hxx>
 #include <GeomAbs_JoinType.hxx>
+#include <GeomAbs_SurfaceType.hxx>
 #include <Poly_Triangulation.hxx>
 #include <Precision.hxx>
 #include <Standard_Failure.hxx>
@@ -864,6 +868,151 @@ int mc_contains(MCFacadeShape* s, double x, double y, double z, int* err) {
   } catch (const Standard_Failure& e) {
     setOcctError(err, "mc_contains", e);
     return -1;
+  }
+}
+
+// ------------------------------------------------------- selection census
+// The enumeration behind every function here is TopExp::MapShapes
+// — the TopExp traversal that records each distinct sub-shape at
+// its first occurrence. edgeOp (fillet/chamfer) and mc_edge_count
+// already index edges from the same map, so census indices and
+// finishing indices line up by construction.
+
+int mc_shape_counts(MCFacadeShape* s, int* faces, int* edges,
+                    int* vertices, int* err) {
+  if (!s) {
+    return fail(err, MC_ERR_INVALID_ARG, "null shape handle");
+  }
+  try {
+    if (faces) {
+      NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> m;
+      TopExp::MapShapes(s->shape, TopAbs_FACE, m);
+      *faces = m.Extent();
+    }
+    if (edges) {
+      NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> m;
+      TopExp::MapShapes(s->shape, TopAbs_EDGE, m);
+      *edges = m.Extent();
+    }
+    if (vertices) {
+      NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> m;
+      TopExp::MapShapes(s->shape, TopAbs_VERTEX, m);
+      *vertices = m.Extent();
+    }
+    if (err) *err = MC_OK;
+    return MC_OK;
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_shape_counts", e);
+    return MC_ERR_OCCT;
+  }
+}
+
+int mc_face_info(MCFacadeShape* s, int faceIndex, double* area,
+                 double center[3], double normal[3], int* isPlanar,
+                 int* err) {
+  if (!s) {
+    return fail(err, MC_ERR_INVALID_ARG, "null shape handle");
+  }
+  try {
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> faceMap;
+    TopExp::MapShapes(s->shape, TopAbs_FACE, faceMap);
+    if (faceIndex < 0 || faceIndex >= faceMap.Extent()) {
+      return fail(err, MC_ERR_INVALID_ARG, "face index out of range");
+    }
+    const TopoDS_Face face = TopoDS::Face(faceMap.FindKey(faceIndex + 1));
+    if (area || center) {
+      GProp_GProps props;
+      BRepGProp::SurfaceProperties(face, props);
+      if (area) *area = props.Mass();
+      if (center) {
+        const gp_Pnt c = props.CentreOfMass();
+        center[0] = c.X();
+        center[1] = c.Y();
+        center[2] = c.Z();
+      }
+    }
+    BRepAdaptor_Surface adaptor(face);
+    const bool planar = adaptor.GetType() == GeomAbs_Plane;
+    if (isPlanar) *isPlanar = planar ? 1 : 0;
+    if (normal) {
+      if (planar) {
+        gp_Dir d = adaptor.Plane().Axis().Direction();
+        if (face.Orientation() == TopAbs_REVERSED) d.Reverse();
+        normal[0] = d.X();
+        normal[1] = d.Y();
+        normal[2] = d.Z();
+      } else {
+        normal[0] = normal[1] = normal[2] = 0.0;
+      }
+    }
+    if (err) *err = MC_OK;
+    return MC_OK;
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_face_info", e);
+    return MC_ERR_OCCT;
+  }
+}
+
+int mc_edge_info(MCFacadeShape* s, int edgeIndex, int* curveType,
+                 double* length, double start[3], double end[3],
+                 double center[3], double* radius, int* err) {
+  if (!s) {
+    return fail(err, MC_ERR_INVALID_ARG, "null shape handle");
+  }
+  try {
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> edgeMap;
+    TopExp::MapShapes(s->shape, TopAbs_EDGE, edgeMap);
+    if (edgeIndex < 0 || edgeIndex >= edgeMap.Extent()) {
+      return fail(err, MC_ERR_INVALID_ARG, "edge index out of range");
+    }
+    const TopoDS_Edge edge = TopoDS::Edge(edgeMap.FindKey(edgeIndex + 1));
+    BRepAdaptor_Curve adaptor(edge);
+    const GeomAbs_CurveType type = adaptor.GetType();
+    if (curveType) {
+      *curveType = type == GeomAbs_Line    ? 0
+                   : type == GeomAbs_Circle ? 1
+                                            : 2;
+    }
+    if (length) {
+      // OCCT 8.0.1's entry point for curve properties is
+      // LinearProperties (there is no BRepGProp::EdgeProperties);
+      // its Mass() is the edge length.
+      GProp_GProps props;
+      BRepGProp::LinearProperties(edge, props);
+      *length = props.Mass();
+    }
+    if (start) {
+      const gp_Pnt p = BRep_Tool::Pnt(TopExp::FirstVertex(edge, Standard_True));
+      start[0] = p.X();
+      start[1] = p.Y();
+      start[2] = p.Z();
+    }
+    if (end) {
+      const gp_Pnt p = BRep_Tool::Pnt(TopExp::LastVertex(edge, Standard_True));
+      end[0] = p.X();
+      end[1] = p.Y();
+      end[2] = p.Z();
+    }
+    if (center || radius) {
+      if (type == GeomAbs_Circle) {
+        const gp_Circ circ = adaptor.Circle();
+        if (center) {
+          const gp_Pnt c = circ.Location();
+          center[0] = c.X();
+          center[1] = c.Y();
+          center[2] = c.Z();
+        }
+        if (radius) *radius = circ.Radius();
+      } else {
+        if (center) center[0] = center[1] = center[2] = 0.0;
+        if (radius) *radius = 0.0;
+      }
+    }
+    if (err) *err = MC_OK;
+    return MC_OK;
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_edge_info", e);
+    return MC_ERR_OCCT;
   }
 }
 
