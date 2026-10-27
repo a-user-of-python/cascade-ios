@@ -14,7 +14,10 @@ calls everything from the actual OCCT libraries. The façade
 pass-through**: it exposes OCCT's own operations as direct C-ABI
 wrappers — primitives, prism, revolve, loft, sweep, booleans,
 fillet, chamfer, shell/offset, tessellation with per-face ranges,
-volume / bounding-box / contains queries. It implements **no CAD
+volume / bounding-box / contains queries, and (added 2026-10-27,
+see "Sketch support" below) sketch faces built from line / circle
+/ arc entities with holes, a face prism, and a face-area query.
+It implements **no CAD
 feature logic and no geometry math of its own**: the C++ side only
 translates calls and data (handles in, buffers out) and catches
 OCCT exceptions at the boundary. Where OCCT has an operation, the
@@ -190,6 +193,108 @@ Notes from the proof:
   these calls). This was exercised by the proof run in a bare
   environment.
 
+## Sketch support (added 2026-10-27)
+
+Sean's follow-on ask: sketching must go through Cascade too. Three
+façade functions were added; the 20 proof checks below were run
+with the same harness (whole suite now **77 checks, ALL PASS** —
+the original 57 unchanged):
+
+- `mc_face_from_sketch(origin, normal, xDir, entityTypes,
+  entityData, entityCount, profileStarts, profileCount, err)` —
+  the sketch plane is a `gp_Pln` (from `gp_Ax3`: origin, normal,
+  xDir); each entity becomes a real OCCT curve/edge: lines via
+  `GC_MakeSegment`, arcs via `GC_MakeArcOfCircle` on a `gp_Circ`,
+  circles as a `gp_Circ` edge, all through
+  `BRepBuilderAPI_MakeEdge`; profiles become wires through
+  `BRepBuilderAPI_MakeWire` and the face through
+  `BRepBuilderAPI_MakeFace(plane, outerWire)` + `Add(holeWire)`.
+  Entities arrive as parallel arrays — a type array plus a flat
+  data array with a fixed stride of 6 doubles per entity (line:
+  x1,y1,x2,y2; circle: cx,cy,r; arc: cx,cy,r,start,end radians
+  CCW) — and profiles as CSR ranges (`profileStarts`, count+1
+  entries); profile 0 is the outer profile, the rest are holes.
+  The result is validated with `BRepCheck_Analyzer` before it is
+  handed back, so a bad sketch is an error code, never a bogus
+  face.
+- `mc_prism_face(face, dir, dist, err)` — `BRepPrimAPI_MakePrism`
+  of a face handle (the sketch counterpart of the polygon-only
+  `mc_prism`, which stays).
+- `mc_face_area(shape, err)` — face area via
+  `BRepGProp::SurfaceProperties` (that is OCCT 8.0.1's name for
+  the face-properties entry point; its Mass() is the area).
+
+Design note — where the façade's work begins and ends: the plane,
+the entities, the wires and the face are OCCT `gp` / `Geom` /
+`BRep` objects end to end; **no profile math lives in the
+façade**. The only sequencing the façade performs is ordering
+each profile's entities end to end (endpoint match within
+1e-6 mm) because `BRepBuilderAPI_MakeWire` requires connected
+input, plus two pieces of pure representation translation, both
+verified empirically against 8.0.1:
+
+- **Hole wires are reversed before `Add`.** OCCT represents a
+  hole by a wire oriented opposite to the outer wire, and
+  `MakeFace::Add` does not reorient: an unreversed circular hole
+  in the proof's 40×40 plate produced area **1678.540** (the hole
+  ADDED as material) and failed `BRepCheck`; reversed, the same
+  input gives **1521.460** and a valid face. Callers describe
+  every profile in the same orientation; the reversal is done
+  inside.
+- **Arc sweeps are normalised** to CCW from start to end
+  (wrapping past 2π); a zero/full-turn sweep is rejected — a full
+  circle is the circle entity's job.
+
+Proof additions (exact output of the extended run):
+
+```
+  [PASS] mc_face_from_sketch shuffled rect
+  area(rect 30x20) = 600.000 (err=0)
+  [PASS] rect area == 600
+  [PASS] mc_prism_face rect x10
+  volume(rect prism) = 6000.000 (err=0)
+  [PASS] rect prism volume == 6000
+  [PASS] mc_face_from_sketch circle r=5
+  area(circle r=5) = 78.540 (err=0)
+  [PASS] circle area ~= 78.5398
+  [PASS] mc_prism_face circle x4
+  volume(circle prism) = 314.159 (err=0)
+  [PASS] circle prism volume ~= 314.159
+  [PASS] mc_face_from_sketch square+arc
+  area(square 20x20 arc corner r=5) = 394.635 (err=0)
+  [PASS] mixed area ~= 394.635
+  [PASS] mc_prism_face mixed x5
+  volume(mixed prism) = 1973.175 (err=0)
+  [PASS] mixed prism volume == area x depth
+  [PASS] mixed prism volume ~= 1973.175
+  [PASS] mc_face_from_sketch rect+hole
+  area(rect 40x40 hole r=5) = 1521.460 (err=0)
+  [PASS] nested area ~= 1521.46
+  [PASS] mc_prism_face nested x10
+  volume(nested prism) = 15214.602 (err=0)
+  [PASS] nested prism volume ~= 15214.6
+  [PASS] mc_tessellate nested prism
+  [PASS] nested: sum(face ranges) == triangles
+  nested tessellation: faces=7 triangles=120 vertices=130
+  [PASS] open profile returns an error
+  open profile error: mc_face_from_sketch: profile is not closed
+RESULT: ALL PASS
+```
+
+Checks of note: the rectangle's 4 lines are passed deliberately
+SHUFFLED (C, A, D, B) and the mixed profile is shuffled too — the
+endpoint ordering is exercised, not assumed. The mixed profile
+(20×20 square, one corner replaced by a quarter arc r=5) matches
+the analytic 400 − 25 + π·25/4 = 394.635; the nested profile
+matches 1600 − π·25 = 1521.460 and its prism 15214.602.
+
+The demo's fifth button ("Sketch plate with hole") drives exactly
+these calls from Swift: a 60×40 rounded-corner outline (4 lines +
+4 arcs, r=6) with a circular hole (r=8), prism 8 mm. Its entity
+data was also run through the host proof: face area **2168.035**
+mm², volume **17344.283** mm³ — identical to the analytic value,
+so those are the numbers the button should show on-device.
+
 ## Xcode project
 
 `CascadePort.xcodeproj`, generated by `gen_project.py` in this
@@ -206,7 +311,9 @@ repo (deterministic md5 UUIDs; regenerating is byte-identical).
   `DEVELOPMENT_TEAM` (Sean picks his own team in Xcode), links
   `libCascadeKit.a`, façade reached through
   `DemoApp/CascadeDemo-Bridging-Header.h`. The app contains no
-  geometry logic: four buttons → façade calls → SceneKit display.
+  geometry logic: five buttons → façade calls → SceneKit display
+  (the fifth is the sketch plate: entities described as Swift
+  arrays → `mc_face_from_sketch` → `mc_prism_face` → render).
 
 ## Where iOS/Xcode may differ from the Linux proof (honest list)
 

@@ -95,6 +95,70 @@ MCFacadeShape* mc_sweep(const double* xy, int n,
                         const double yAxis[3], const double* pathPts,
                         int pathCount, int* err);
 
+// ---------------------------------------------------------------- sketches
+// A sketch is a set of 2D entities on a plane: line segments,
+// circles and circular arcs, grouped into closed profiles. The
+// entities are built as real OCCT objects (gp_Circ / Geom curves,
+// BRepBuilderAPI_MakeEdge / MakeWire / MakeFace on a gp_Pln) — the
+// façade only sequences the calls and translates the arrays.
+
+/// Sketch entity kinds (the `entityTypes` values below).
+typedef enum MCSketchEntityType {
+  MC_SKETCH_LINE = 0,   ///< data: x1, y1, x2, y2
+  MC_SKETCH_CIRCLE = 1, ///< data: cx, cy, r — a complete closed profile
+  MC_SKETCH_ARC = 2,    ///< data: cx, cy, r, startAngle, endAngle
+                        ///< (radians, counter-clockwise)
+} MCSketchEntityType;
+
+/// Doubles per entity in the flat `entityData` array of
+/// mc_face_from_sketch. Unused slots are ignored (pass 0).
+#define MC_SKETCH_DATA_STRIDE 6
+
+/// Build a planar FACE from sketch entities (BRepBuilderAPI_MakeFace
+/// on the sketch plane).
+///
+/// Plane: `origin` is a 3D point on the plane, `normal` its normal,
+/// `xDir` the direction of the sketch's +U axis (the +V axis is
+/// normal x xDir, so (u, v) maps to origin + u*xDir + v*YDir; axes
+/// are normalised internally — data translation).
+///
+/// Entities: `entityTypes[i]` is the kind of entity i (see
+/// MCSketchEntityType); its parameters are the MC_SKETCH_DATA_STRIDE
+/// doubles at `entityData + MC_SKETCH_DATA_STRIDE * i`, in sketch
+/// (u, v) coordinates / radians as listed above. An arc's sweep is
+/// counter-clockwise from startAngle to endAngle (wrapping past
+/// 2*pi if needed) and must be less than a full turn — pass a
+/// MC_SKETCH_CIRCLE entity for a full circle. A circle entity must
+/// be the ONLY entity of its profile.
+///
+/// Profiles: `profileStarts` holds `profileCount + 1` indices:
+/// profile p spans entities [profileStarts[p], profileStarts[p+1]),
+/// profileStarts[0] == 0 and profileStarts[profileCount] ==
+/// entityCount. Profile 0 is the outer profile; any further
+/// profiles are holes cut into it. Describe every profile in the
+/// SAME orientation (counter-clockwise around the plane normal for
+/// a normal-facing face): OCCT represents a hole by an
+/// oppositely-oriented wire, and the façade reverses hole wires
+/// internally — that is B-rep representation translation, done for
+/// you. Entities within a profile may be
+/// in ANY order — they are connected end to end (endpoint match
+/// within 1e-6 mm) before the wire is built. Every profile must
+/// form a single closed loop; an open or disconnected profile is an
+/// error (MC_ERR_INVALID_ARG), never a bogus face.
+MCFacadeShape* mc_face_from_sketch(const double origin[3],
+                                   const double normal[3],
+                                   const double xDir[3],
+                                   const int* entityTypes,
+                                   const double* entityData, int entityCount,
+                                   const int* profileStarts, int profileCount,
+                                   int* err);
+
+/// BRepPrimAPI_MakePrism of a FACE handle (e.g. from
+/// mc_face_from_sketch) along `dir` for `dist` mm — the sketch-based
+/// counterpart of mc_prism, which only takes polygon profiles.
+MCFacadeShape* mc_prism_face(MCFacadeShape* face, const double dir[3],
+                             double dist, int* err);
+
 // ---------------------------------------------------------------- booleans
 // Direct wraps of BRepAlgoAPI_Fuse / Cut / Common. Inputs are left
 // unchanged; the result is a new handle the caller owns.
@@ -124,6 +188,11 @@ MCFacadeShape* mc_shell(MCFacadeShape* s, double thickness, int* err);
 
 /// BRepGProp volume of the shape (mm^3).
 double mc_volume(MCFacadeShape* s, int* err);
+/// BRepGProp::SurfaceProperties area of the shape (mm^2) — for a
+/// face handle this is the face's own area; for a shape with
+/// several faces it is their total. Swift uses it to validate
+/// sketch profiles before extruding them.
+double mc_face_area(MCFacadeShape* s, int* err);
 /// BRepBndLib bounding box: writes xmin, ymin, zmin, xmax, ymax,
 /// zmax into out[6].
 int mc_bbox(MCFacadeShape* s, double out[6], int* err);

@@ -1,7 +1,7 @@
 import SwiftUI
 import SceneKit
 
-/// Cascade Demo: four big buttons, each one a direct trip through
+/// Cascade Demo: five big buttons, each one a direct trip through
 /// the façade into Open CASCADE, with the tessellated result shown
 /// in SceneKit and its volume / triangle count in large type.
 /// No geometry logic lives in the app — it calls and displays.
@@ -28,6 +28,7 @@ struct ContentView: View {
                 demoButton("Filleted box", systemImage: "cube.fill") { try CascadeEngine.filletedBox() }
                 demoButton("Box + cylinder union", systemImage: "cylinder") { try CascadeEngine.boxUnionCylinder() }
                 demoButton("Hollow box (shell)", systemImage: "square.dashed") { try CascadeEngine.hollowBox() }
+                demoButton("Sketch plate with hole", systemImage: "square.and.pencil") { try CascadeEngine.sketchPlate() }
             }
 
             HStack(spacing: 32) {

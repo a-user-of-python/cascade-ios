@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -15,9 +16,11 @@
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
@@ -34,6 +37,8 @@
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
+#include <GC_MakeArcOfCircle.hxx>
+#include <GC_MakeSegment.hxx>
 #include <GProp_GProps.hxx>
 #include <GeomAbs_JoinType.hxx>
 #include <Poly_Triangulation.hxx>
@@ -49,7 +54,9 @@
 #include <TopoDS_Shape.hxx>
 #include <gp.hxx>
 #include <gp_Ax1.hxx>
+#include <gp_Ax2.hxx>
 #include <gp_Ax3.hxx>
+#include <gp_Circ.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
@@ -143,6 +150,170 @@ bool makeFace(const double* xy, int n, const double origin[3],
     return false;
   }
   outFace = mf.Face();
+  return true;
+}
+
+// ------------------------------------------------------------ sketches
+// Entity -> OCCT edge translation. Every curve is an OCCT object
+// (GC_MakeSegment / GC_MakeArcOfCircle on a gp_Circ carried by the
+// sketch plane's axes) and every edge is BRepBuilderAPI_MakeEdge's
+// product; nothing here computes profile geometry.
+
+struct SketchEdge {
+  TopoDS_Edge edge;
+  gp_Pnt first;
+  gp_Pnt last;
+  bool isCircle = false;
+};
+
+// Endpoint coincidence tolerance for ordering a profile's edges
+// (documented in occt_facade.h).
+constexpr double kSketchJoinTol = 1e-6;
+
+bool sketchMakeEdge(int type, const double* d, const gp_Pnt& o,
+                    const gp_Dir& xDir, const gp_Dir& yDir,
+                    const gp_Dir& nDir, SketchEdge& out, std::string& why) {
+  const gp_Vec xv(xDir), yv(yDir);
+  auto pt = [&](double u, double v) {
+    return o.Translated(xv.Multiplied(u)).Translated(yv.Multiplied(v));
+  };
+  out.isCircle = false;
+  if (type == MC_SKETCH_LINE) {
+    const gp_Pnt p1 = pt(d[0], d[1]);
+    const gp_Pnt p2 = pt(d[2], d[3]);
+    if (p1.Distance(p2) < Precision::Confusion()) {
+      why = "line entity has zero length";
+      return false;
+    }
+    GC_MakeSegment mk(p1, p2);
+    if (!mk.IsDone()) {
+      why = "line construction failed";
+      return false;
+    }
+    BRepBuilderAPI_MakeEdge me(mk.Value());
+    if (!me.IsDone()) {
+      why = "line edge construction failed";
+      return false;
+    }
+    out.edge = me.Edge();
+  } else if (type == MC_SKETCH_CIRCLE || type == MC_SKETCH_ARC) {
+    const double r = d[2];
+    if (!(r > Precision::Confusion())) {
+      why = "circle/arc entity has a non-positive radius";
+      return false;
+    }
+    const gp_Ax2 ax(pt(d[0], d[1]), nDir, xDir);
+    const gp_Circ circ(ax, r);
+    if (type == MC_SKETCH_CIRCLE) {
+      BRepBuilderAPI_MakeEdge me(circ);
+      if (!me.IsDone()) {
+        why = "circle edge construction failed";
+        return false;
+      }
+      out.edge = me.Edge();
+      out.isCircle = true;
+    } else {
+      // CCW sweep from startAngle to endAngle, wrapping once past
+      // 2*pi when end < start; a zero or full-turn sweep is not an
+      // arc (a full turn is a circle entity).
+      constexpr double kTwoPi = 6.28318530717958647692;
+      double sweep = std::fmod(d[4] - d[3], kTwoPi);
+      if (sweep < 0) sweep += kTwoPi;
+      if (sweep < Precision::Angular()) {
+        why = "arc entity has a zero sweep (use a circle for a full turn)";
+        return false;
+      }
+      GC_MakeArcOfCircle mk(circ, d[3], d[3] + sweep, Standard_True);
+      if (!mk.IsDone()) {
+        why = "arc construction failed";
+        return false;
+      }
+      BRepBuilderAPI_MakeEdge me(mk.Value());
+      if (!me.IsDone()) {
+        why = "arc edge construction failed";
+        return false;
+      }
+      out.edge = me.Edge();
+    }
+  } else {
+    why = "unknown sketch entity type";
+    return false;
+  }
+  out.first = BRep_Tool::Pnt(TopExp::FirstVertex(out.edge, Standard_True));
+  out.last = BRep_Tool::Pnt(TopExp::LastVertex(out.edge, Standard_True));
+  return true;
+}
+
+// Order one profile's edges end to end and build its wire with
+// BRepBuilderAPI_MakeWire (which requires connected input). The
+// ordering is pure sequencing of the caller's entities — the wire,
+// its vertices and its geometry are all OCCT's.
+bool sketchMakeWire(const std::vector<SketchEdge>& edges, TopoDS_Wire& out,
+                    std::string& why) {
+  if (edges.empty()) {
+    why = "profile has no entities";
+    return false;
+  }
+  if (edges.size() == 1) {
+    if (!edges[0].isCircle) {
+      why = "profile is not closed (a single line/arc cannot close)";
+      return false;
+    }
+    BRepBuilderAPI_MakeWire mw(edges[0].edge);
+    if (!mw.IsDone()) {
+      why = "wire construction failed";
+      return false;
+    }
+    out = mw.Wire();
+    return true;
+  }
+  std::deque<const SketchEdge*> chain;
+  std::vector<bool> used(edges.size(), false);
+  chain.push_back(&edges[0]);
+  used[0] = true;
+  gp_Pnt head = edges[0].first;
+  gp_Pnt tail = edges[0].last;
+  size_t placed = 1;
+  while (placed < edges.size()) {
+    bool progressed = false;
+    for (size_t i = 0; i < edges.size(); ++i) {
+      if (used[i]) continue;
+      const SketchEdge& e = edges[i];
+      if (e.first.Distance(tail) <= kSketchJoinTol) {
+        chain.push_back(&e);
+        tail = e.last;
+      } else if (e.last.Distance(tail) <= kSketchJoinTol) {
+        chain.push_back(&e);
+        tail = e.first;
+      } else if (e.last.Distance(head) <= kSketchJoinTol) {
+        chain.push_front(&e);
+        head = e.first;
+      } else if (e.first.Distance(head) <= kSketchJoinTol) {
+        chain.push_front(&e);
+        head = e.last;
+      } else {
+        continue;
+      }
+      used[i] = true;
+      ++placed;
+      progressed = true;
+    }
+    if (!progressed) {
+      why = "profile entities do not connect end to end";
+      return false;
+    }
+  }
+  if (head.Distance(tail) > kSketchJoinTol) {
+    why = "profile is not closed";
+    return false;
+  }
+  BRepBuilderAPI_MakeWire mw;
+  for (const SketchEdge* e : chain) mw.Add(e->edge);
+  if (!mw.IsDone()) {
+    why = "wire construction failed (edges not connected)";
+    return false;
+  }
+  out = mw.Wire();
   return true;
 }
 
@@ -408,6 +579,142 @@ MCFacadeShape* mc_sweep(const double* xy, int n, const double origin[3],
   }
 }
 
+// ------------------------------------------------------------ sketches
+
+MCFacadeShape* mc_face_from_sketch(const double origin[3],
+                                   const double normal[3],
+                                   const double xDir[3],
+                                   const int* entityTypes,
+                                   const double* entityData, int entityCount,
+                                   const int* profileStarts,
+                                   int profileCount, int* err) {
+  if (!origin || !normal || !xDir || !entityTypes || !entityData ||
+      !profileStarts || entityCount < 1 || profileCount < 1) {
+    fail(err, MC_ERR_INVALID_ARG, "mc_face_from_sketch: null/bad arguments");
+    return nullptr;
+  }
+  if (profileStarts[0] != 0 || profileStarts[profileCount] != entityCount) {
+    fail(err, MC_ERR_INVALID_ARG,
+         "mc_face_from_sketch: profileStarts must start at 0 and end at "
+         "entityCount");
+    return nullptr;
+  }
+  for (int p = 0; p < profileCount; ++p) {
+    if (profileStarts[p + 1] <= profileStarts[p]) {
+      fail(err, MC_ERR_INVALID_ARG,
+           "mc_face_from_sketch: profile ranges must be non-empty and "
+           "increasing");
+      return nullptr;
+    }
+  }
+  try {
+    gp_Vec n(normal[0], normal[1], normal[2]);
+    gp_Vec x(xDir[0], xDir[1], xDir[2]);
+    if (n.Magnitude() < 1e-12 || x.Magnitude() < 1e-12) {
+      fail(err, MC_ERR_INVALID_ARG,
+           "mc_face_from_sketch: plane normal/xDir is degenerate");
+      return nullptr;
+    }
+    n.Normalize();
+    x.Normalize();
+    if (std::fabs(n.Dot(x)) > 1.0 - 1e-9) {
+      fail(err, MC_ERR_INVALID_ARG,
+           "mc_face_from_sketch: plane normal and xDir are parallel");
+      return nullptr;
+    }
+    const gp_Pnt o(origin[0], origin[1], origin[2]);
+    const gp_Ax3 ax3(o, gp_Dir(n), gp_Dir(x));
+    const gp_Pln plane(ax3);
+    const gp_Dir xd = ax3.XDirection();
+    const gp_Dir yd = ax3.YDirection();
+    const gp_Dir nd = ax3.Direction();
+
+    std::vector<TopoDS_Wire> wires;
+    for (int p = 0; p < profileCount; ++p) {
+      const int b = profileStarts[p], e = profileStarts[p + 1];
+      std::vector<SketchEdge> edges;
+      for (int i = b; i < e; ++i) {
+        const int type = entityTypes[i];
+        if (type == MC_SKETCH_CIRCLE && e - b > 1) {
+          fail(err, MC_ERR_INVALID_ARG,
+               "mc_face_from_sketch: a circle entity must be the only "
+               "entity of its profile");
+          return nullptr;
+        }
+        SketchEdge se;
+        std::string why;
+        if (!sketchMakeEdge(type, entityData + MC_SKETCH_DATA_STRIDE * i, o,
+                            xd, yd, nd, se, why)) {
+          fail(err, MC_ERR_INVALID_ARG,
+               std::string("mc_face_from_sketch: ") + why);
+          return nullptr;
+        }
+        edges.push_back(se);
+      }
+      TopoDS_Wire wire;
+      std::string why;
+      if (!sketchMakeWire(edges, wire, why)) {
+        fail(err, MC_ERR_INVALID_ARG,
+             std::string("mc_face_from_sketch: ") + why);
+        return nullptr;
+      }
+      wires.push_back(wire);
+    }
+
+    BRepBuilderAPI_MakeFace mf(plane, wires[0], Standard_True);
+    // OCCT represents a hole by a wire oriented OPPOSITE to the
+    // outer wire, and MakeFace::Add does not reorient for us
+    // (verified against 8.0.1: an unreversed hole is added as
+    // material — area grows instead of shrinking — and the face
+    // fails BRepCheck). Callers describe every profile in the same
+    // orientation, so hole wires are reversed here: representation
+    // translation, not geometry.
+    for (size_t p = 1; p < wires.size(); ++p) {
+      mf.Add(TopoDS::Wire(wires[p].Reversed()));
+    }
+    if (!mf.IsDone()) {
+      fail(err, MC_ERR_OCCT, "mc_face_from_sketch: face construction failed");
+      return nullptr;
+    }
+    const TopoDS_Face face = mf.Face();
+    if (face.IsNull() || !BRepCheck_Analyzer(face).IsValid()) {
+      fail(err, MC_ERR_OCCT,
+           "mc_face_from_sketch: resulting face failed OCCT validity check");
+      return nullptr;
+    }
+    return wrap(face, err);
+  } catch (const Standard_Failure& ex) {
+    setOcctError(err, "mc_face_from_sketch", ex);
+    return nullptr;
+  }
+}
+
+MCFacadeShape* mc_prism_face(MCFacadeShape* face, const double dir[3],
+                             double dist, int* err) {
+  if (!face || !dir) {
+    fail(err, MC_ERR_INVALID_ARG, "mc_prism_face: null argument");
+    return nullptr;
+  }
+  if (face->shape.ShapeType() != TopAbs_FACE) {
+    fail(err, MC_ERR_INVALID_ARG, "mc_prism_face: handle is not a face");
+    return nullptr;
+  }
+  try {
+    gp_Vec v(dir[0], dir[1], dir[2]);
+    if (v.Magnitude() < 1e-12) {
+      fail(err, MC_ERR_INVALID_ARG, "mc_prism_face: direction is degenerate");
+      return nullptr;
+    }
+    v.Normalize();
+    BRepPrimAPI_MakePrism mk(face->shape, v.Multiplied(dist));
+    mk.Build();
+    return wrap(mk.Shape(), err);
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_prism_face", e);
+    return nullptr;
+  }
+}
+
 // ------------------------------------------------------------ booleans
 
 MCFacadeShape* mc_unite(MCFacadeShape* a, MCFacadeShape* b, int* err) {
@@ -490,6 +797,22 @@ double mc_volume(MCFacadeShape* s, int* err) {
     return props.Mass();
   } catch (const Standard_Failure& e) {
     setOcctError(err, "mc_volume", e);
+    return 0.0;
+  }
+}
+
+double mc_face_area(MCFacadeShape* s, int* err) {
+  if (!s) {
+    fail(err, MC_ERR_INVALID_ARG, "null shape handle");
+    return 0.0;
+  }
+  try {
+    GProp_GProps props;
+    BRepGProp::SurfaceProperties(s->shape, props);
+    if (err) *err = MC_OK;
+    return props.Mass();
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_face_area", e);
     return 0.0;
   }
 }
