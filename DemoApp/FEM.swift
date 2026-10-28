@@ -665,6 +665,12 @@ struct FemPanelView: View {
         let cz = Double(minB.z + maxB.z) / 2  // local z -> world height
         let cameraNode = SCNNode()
         cameraNode.camera = SCNCamera()
+        // The default far plane is 100, but this camera sits ~1.35x
+        // the body diagonal away — any body with diagonal over ~74
+        // would lie beyond it and clip to nothing. Scale the clip
+        // planes with the body.
+        cameraNode.camera?.zNear = Swift.max(0.1, diag * 0.01)
+        cameraNode.camera?.zFar = diag * 20
         cameraNode.position = SCNVector3(Float(diag * 0.75),
                                          Float(cz + diag * 0.6),
                                          Float(diag * 0.95))

@@ -204,6 +204,11 @@ struct ContentView: View {
 
             let cameraNode = SCNNode()
             cameraNode.camera = SCNCamera()
+            // Defensive: the default far plane is 100 — fine for the
+            // small demo shapes, but a large imported body would hit
+            // the same clipping cliff the FEM view had.
+            cameraNode.camera?.zNear = 0.1
+            cameraNode.camera?.zFar = 10000
             cameraNode.position = SCNVector3(34, 30, 38)
             cameraNode.look(at: SCNVector3(0, 4, 0))
             newScene.rootNode.addChildNode(cameraNode)
