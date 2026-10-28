@@ -56,7 +56,6 @@ DEMO_SOURCES = [
     "DemoApp/CascadeDemoApp.swift",
     "DemoApp/CascadeEngine.swift",
     "DemoApp/ContentView.swift",
-    "DemoApp/FEM.swift",
     # MetalCAD sketch editor slice (copied kit + app sources, see
     # DemoSketchHost.swift for the adaptation notes).
     "DemoApp/Math.swift",

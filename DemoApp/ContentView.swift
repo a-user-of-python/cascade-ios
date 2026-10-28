@@ -26,7 +26,6 @@ struct ContentView: View {
     /// The current body (set by STEP import; edited by sketches).
     @StateObject private var currentBody = CurrentBody()
     @State private var showImporter = false
-    @State private var showFEM = false
     /// A finished sketch waiting for its apply-mode choice (only
     /// used when a current body exists).
     @State private var pendingSketch: Sketch?
@@ -94,13 +93,6 @@ struct ContentView: View {
                         Label("Sketch (MetalCAD editor)", systemImage: "pencil.and.ruler")
                     }
                     .buttonStyle(.borderedProminent)
-                    Button {
-                        showFEM = true
-                    } label: {
-                        Label("FEM", systemImage: "function")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!currentBody.exists)
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
@@ -115,9 +107,6 @@ struct ContentView: View {
         .padding(16)
         .fullScreenCover(isPresented: $showSketchEditor, onDismiss: sketchEditorDismissed) {
             SketchEditorView(model: sketchModel, sketchID: EditorModel.hostedSketchID)
-        }
-        .fullScreenCover(isPresented: $showFEM) {
-            FemPanelView(currentBody: currentBody)
         }
         .sheet(isPresented: $showImporter) {
             StepImportListView { url in
@@ -208,8 +197,8 @@ struct ContentView: View {
             let cameraNode = SCNNode()
             cameraNode.camera = SCNCamera()
             // Defensive: the default far plane is 100 — fine for the
-            // small demo shapes, but a large imported body would hit
-            // the same clipping cliff the FEM view had.
+            // small demo shapes, but a large imported body would be
+            // clipped by it.
             cameraNode.camera?.zNear = 0.1
             cameraNode.camera?.zFar = 10000
             cameraNode.position = SCNVector3(34, 30, 38)
@@ -371,7 +360,7 @@ enum CascadeFolders {
             Cascade Demo → Cascade — then open the app and tap Import STEP.
 
             sample-plate.step is already here: import it in the app to try
-            the sketch tools and FEM right away.
+            the sketch tools right away.
             """
             try? text.write(to: readme, atomically: true, encoding: .utf8)
         }

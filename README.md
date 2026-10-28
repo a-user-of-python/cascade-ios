@@ -40,7 +40,9 @@ keeps a current body, and edits that body with sketches
   booleans, finishing, queries, a selection census, tessellation,
   and STEP import/export — plus section 11, **FEM**: the library's
   own voxel mesher and linear-static solver (basic stress
-  analysis), built on OCCT's geometry queries.
+  analysis), built on OCCT's geometry queries. (Section 11 is kept
+  in the library + host harness; since 2026-10-28 the demo app no
+  longer exposes it — the app is modeling-only.)
 - **CascadeDemo** — a small iPad app that links CascadeKit and
   calls it from Swift through a bridging header. Normal-size
   buttons build shapes; each result is tessellated by OCCT and
@@ -78,7 +80,7 @@ and self-contained. It is regenerated (byte-identical) by
 | **Sketch plate with hole** | Sketch entities → OCCT builds the face (`mc_face_from_sketch`) → prism. Volume reads **17 344.3 mm³** (verified on-device, matching the host proof exactly). |
 | **Import STEP** | Lists the .step files in the app's Files folder (On My iPad → Cascade Demo → Cascade) and reads the tapped one with OCCT's own STEP reader (`mc_import_step`) — geometry plus the file's surface colours, units converted to mm. The imported shape becomes the **current body** (a multi-solid file arrives as one compound; the status line reports its solid count) and is shown in its STEP colours when the file carries them. Names and assembly structure are not imported. |
 | **Sketch (MetalCAD editor)** | MetalCAD's real 2D sketch editor. **Finish & Extrude** extrudes the sketch through the library; when a current body exists it first asks: **Add to body** (`mc_unite`), **Subtract from body** (`mc_subtract`), or **New shape (standalone)**. The sketch sits on the ground (XZ) plane at the origin, extruded 10 mm — the booleans are world-space, so position your sketch against the body with that in mind. |
-| **FEM** | Basic linear stress analysis of the current body (enabled once one exists): tap faces to fix (blue) or load (orange), pick a material (PLA / Aluminum / Steel) and a mesh size, then **Mesh** and **Solve**. The library voxel-meshes the body, assembles the hex8 stiffness matrix and solves it with PCG; the view re-colours by von Mises stress with the maximum stress and displacement in large type. Captioned honestly in the app: "Basic linear stress analysis — voxel mesh." |
+| **FEM** | *Removed from the demo app 2026-10-28* — the FEM panel was taken out of CascadeDemo (FEM work now lives in the separate FEBio port). Library section 11 (`mc_fem_*`) remains in the façade and host harness; it is simply no longer surfaced in this app, which is modeling-only. |
 
 Tap-drag in the 3D view to orbit the result.
 
