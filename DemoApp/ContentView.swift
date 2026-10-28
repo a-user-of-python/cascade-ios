@@ -1,6 +1,5 @@
 import SwiftUI
 import SceneKit
-import UniformTypeIdentifiers
 
 /// Cascade Demo: buttons, each one a direct trip through the
 /// CascadeKit library into Open CASCADE, with the tessellated
@@ -120,10 +119,11 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $showFEM) {
             FemPanelView(currentBody: currentBody)
         }
-        .fileImporter(isPresented: $showImporter,
-                      allowedContentTypes: [.data],
-                      allowsMultipleSelection: false) { result in
-            handleImport(result)
+        .sheet(isPresented: $showImporter) {
+            StepImportListView { url in
+                showImporter = false
+                importFile(url)
+            }
         }
         .confirmationDialog("Apply the sketch to the current body?",
                             isPresented: $showExtrudeChoice, titleVisibility: .visible) {
@@ -167,36 +167,21 @@ struct ContentView: View {
         }
     }
 
-    /// Import STEP: copy the picked file into the app sandbox (the
-    /// library reads a plain filesystem path), then import it as
-    /// the current body through the library.
-    private func handleImport(_ result: Result<[URL], Error>) {
-        guard case .success(let urls) = result, let url = urls.first else {
-            if case .failure(let e) = result {
-                statusText = "Import cancelled or failed: \(e.localizedDescription)"
-                isError = true
-            }
-            return
-        }
-        let accessed = url.startAccessingSecurityScopedResource()
-        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-        do {
-            let dst = FileManager.default.temporaryDirectory
-                .appendingPathComponent(url.lastPathComponent)
-            if FileManager.default.fileExists(atPath: dst.path) {
-                try FileManager.default.removeItem(at: dst)
-            }
-            try FileManager.default.copyItem(at: url, to: dst)
-            let name = url.lastPathComponent
-            run(status: { r in
-                let n = r.solids ?? 0
-                return "Imported \(name) — \(n) solid\(n == 1 ? "" : "s"). It is now the current body: open the sketch editor, draw, and Finish & Extrude to add or subtract."
-            }) {
-                try CascadeEngine.importSTEP(path: dst.path, name: name, body: currentBody)
-            }
-        } catch {
-            statusText = "Couldn't read that file: \(error.localizedDescription)"
-            isError = true
+    /// Import STEP from a file that already lives inside the app
+    /// sandbox (Documents or Documents/Inbox, picked from the
+    /// in-app import list): the library reads a plain filesystem
+    /// path, so the file's own path goes straight through and it
+    /// becomes the current body. No document picker is involved —
+    /// under some signing setups the system picker cannot run, so
+    /// files arrive through the Files app into this app's folder
+    /// instead (UIFileSharingEnabled in Info.plist).
+    private func importFile(_ url: URL) {
+        let name = url.lastPathComponent
+        run(status: { r in
+            let n = r.solids ?? 0
+            return "Imported \(name) — \(n) solid\(n == 1 ? "" : "s"). It is now the current body: open the sketch editor, draw, and Finish & Extrude to add or subtract."
+        }) {
+            try CascadeEngine.importSTEP(path: url.path, name: name, body: currentBody)
         }
     }
 
@@ -270,5 +255,117 @@ struct ModelView: UIViewRepresentable {
 
     func updateUIView(_ uiView: SCNView, context: Context) {
         uiView.scene = scene
+    }
+}
+
+/// In-app STEP import list: scans the app's Documents folder and
+/// Documents/Inbox (where files shared into the app land) for
+/// .step / .stp files, newest first. This replaces the system
+/// document picker entirely — under some signing setups the picker
+/// cannot select files from the Files app, so files are copied
+/// into "On My iPad → Cascade Demo" in the Files app instead
+/// (the folder is visible because Info.plist sets
+/// UIFileSharingEnabled + LSSupportsOpeningDocumentsInPlace) and
+/// picked here. Every listed file already lives inside the app
+/// sandbox, so its path goes straight to the library.
+struct StepImportListView: View {
+    var onPick: (URL) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var files: [StepFileEntry] = []
+
+    var body: some View {
+        VStack(spacing: 16) {
+            HStack(spacing: 10) {
+                Text("Import STEP")
+                    .font(.system(size: 28, weight: .bold))
+                Spacer()
+                Button {
+                    scan()
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                Button("Done") { dismiss() }
+                    .buttonStyle(.bordered)
+            }
+
+            if files.isEmpty {
+                Spacer()
+                Text("No STEP files yet. In the Files app, copy a .step file into On My iPad → Cascade Demo, then come back and tap Refresh.")
+                    .font(.title3)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 8)
+                Spacer()
+            } else {
+                List(files) { entry in
+                    Button {
+                        onPick(entry.url)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(entry.name)
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                                .lineLimit(2)
+                            Text(entry.detail)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                .listStyle(.plain)
+            }
+        }
+        .padding(16)
+        .onAppear(perform: scan)
+    }
+
+    private func scan() {
+        files = StepFileEntry.scan()
+    }
+}
+
+/// One importable STEP file found in the sandbox.
+struct StepFileEntry: Identifiable {
+    let url: URL
+    let name: String
+    let detail: String
+    let modified: Date
+    var id: URL { url }
+
+    /// Documents + Documents/Inbox, .step / .stp only
+    /// (case-insensitive), newest modification first.
+    static func scan() -> [StepFileEntry] {
+        let fm = FileManager.default
+        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { return [] }
+        let folders: [(url: URL, label: String)] = [
+            (docs, "Documents"),
+            (docs.appendingPathComponent("Inbox", isDirectory: true), "Inbox"),
+        ]
+        let sizeFmt = ByteCountFormatter()
+        sizeFmt.countStyle = .file
+        let dateFmt = DateFormatter()
+        dateFmt.dateStyle = .medium
+        dateFmt.timeStyle = .short
+        var entries: [StepFileEntry] = []
+        for folder in folders {
+            guard let items = try? fm.contentsOfDirectory(
+                at: folder.url,
+                includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey],
+                options: [.skipsHiddenFiles]) else { continue }
+            for item in items {
+                let ext = item.pathExtension.lowercased()
+                guard ext == "step" || ext == "stp" else { continue }
+                let values = try? item.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey])
+                if values?.isRegularFile == false { continue }
+                let modified = values?.contentModificationDate ?? .distantPast
+                let size = Int64(values?.fileSize ?? 0)
+                let detail = "\(sizeFmt.string(fromByteCount: size)) · \(dateFmt.string(from: modified)) · in \(folder.label)"
+                entries.append(StepFileEntry(url: item, name: item.lastPathComponent,
+                                             detail: detail, modified: modified))
+            }
+        }
+        return entries.sorted { $0.modified > $1.modified }
     }
 }
