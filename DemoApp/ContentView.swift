@@ -1,10 +1,13 @@
 import SwiftUI
 import SceneKit
+import UniformTypeIdentifiers
 
-/// Cascade Demo: buttons, each one a direct trip through the façade
-/// into Open CASCADE, with the tessellated result shown in SceneKit
-/// and its volume / triangle count in large type. No geometry logic
-/// lives in the app — it calls and displays.
+/// Cascade Demo: buttons, each one a direct trip through the
+/// CascadeKit library into Open CASCADE, with the tessellated
+/// result shown in SceneKit and its volume / triangle count in
+/// large type. No geometry logic lives in the app — it calls and
+/// displays. "Import STEP" loads a file as the current body, which
+/// the sketch editor can then add to / subtract from.
 ///
 /// Layout: the SceneKit view owns the screen (all remaining space,
 /// layout priority 1); the buttons are NORMAL iOS size in one
@@ -20,6 +23,14 @@ struct ContentView: View {
     /// Hosts the MetalCAD sketch the editor edits (DemoSketchHost).
     @StateObject private var sketchModel = EditorModel()
     @State private var showSketchEditor = false
+
+    /// The current body (set by STEP import; edited by sketches).
+    @StateObject private var currentBody = CurrentBody()
+    @State private var showImporter = false
+    /// A finished sketch waiting for its apply-mode choice (only
+    /// used when a current body exists).
+    @State private var pendingSketch: Sketch?
+    @State private var showExtrudeChoice = false
 
     var body: some View {
         VStack(spacing: 12) {
@@ -47,6 +58,12 @@ struct ContentView: View {
                     Text("Triangles").font(.headline).foregroundStyle(.secondary)
                     Text(triangleText).font(.system(size: 30, weight: .bold, design: .rounded))
                 }
+                if let label = currentBody.label {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Current body").font(.headline).foregroundStyle(.secondary)
+                        Text(label).font(.system(size: 22, weight: .semibold, design: .rounded)).lineLimit(1)
+                    }
+                }
                 Spacer()
             }
 
@@ -65,6 +82,12 @@ struct ContentView: View {
                     demoButton("Box + cylinder union", systemImage: "cylinder") { try CascadeEngine.boxUnionCylinder() }
                     demoButton("Hollow box (shell)", systemImage: "square.dashed") { try CascadeEngine.hollowBox() }
                     demoButton("Sketch plate with hole", systemImage: "square.and.pencil") { try CascadeEngine.sketchPlate() }
+                    Button {
+                        showImporter = true
+                    } label: {
+                        Label("Import STEP", systemImage: "square.and.arrow.down")
+                    }
+                    .buttonStyle(.borderedProminent)
                     Button {
                         showSketchEditor = true
                     } label: {
@@ -86,17 +109,84 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $showSketchEditor, onDismiss: sketchEditorDismissed) {
             SketchEditorView(model: sketchModel, sketchID: EditorModel.hostedSketchID)
         }
+        .fileImporter(isPresented: $showImporter,
+                      allowedContentTypes: [.data],
+                      allowsMultipleSelection: false) { result in
+            handleImport(result)
+        }
+        .confirmationDialog("Apply the sketch to the current body?",
+                            isPresented: $showExtrudeChoice, titleVisibility: .visible) {
+            Button("Add to body") { extrudePending(.add) }
+            Button("Subtract from body") { extrudePending(.subtract) }
+            Button("New shape (standalone)") { extrudePending(.standalone) }
+            Button("Cancel", role: .cancel) { pendingSketch = nil }
+        } message: {
+            Text("Your sketch is extruded 10 mm, in place on the ground plane. Add it to \(currentBody.label ?? "the current body"), subtract it, or keep it as a new shape on its own.")
+        }
     }
 
     /// The editor's "Finish & Extrude" sets pendingExtrudeSketchID and
-    /// dismisses; run the Cascade extrude on the hosted sketch through
-    /// the same result path as the demo buttons. A plain dismiss
-    /// (Done) leaves the flag unset and changes nothing here.
+    /// dismisses. With a current body, ask how the extrusion applies
+    /// (add / subtract / standalone); without one, it simply extrudes
+    /// standalone, as before. A plain dismiss (Done) leaves the flag
+    /// unset and changes nothing here.
     private func sketchEditorDismissed() {
         guard let id = sketchModel.pendingExtrudeSketchID else { return }
         sketchModel.pendingExtrudeSketchID = nil
         guard let sketch = sketchModel.sketch(withID: id) else { return }
-        run { try CascadeEngine.sketchExtrude(sketch: sketch) }
+        if currentBody.exists {
+            pendingSketch = sketch
+            showExtrudeChoice = true
+        } else {
+            run { try CascadeEngine.sketchExtrude(sketch: sketch, mode: .standalone, body: currentBody) }
+        }
+    }
+
+    private func extrudePending(_ mode: CascadeEngine.ExtrudeMode) {
+        guard let sketch = pendingSketch else { return }
+        pendingSketch = nil
+        run(status: { _ in
+            switch mode {
+            case .add: return "Added the sketch extrusion to the current body."
+            case .subtract: return "Subtracted the sketch extrusion from the current body."
+            case .standalone: return "Built the sketch as a new shape. The current body is unchanged."
+            }
+        }) {
+            try CascadeEngine.sketchExtrude(sketch: sketch, mode: mode, body: currentBody)
+        }
+    }
+
+    /// Import STEP: copy the picked file into the app sandbox (the
+    /// library reads a plain filesystem path), then import it as
+    /// the current body through the library.
+    private func handleImport(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let url = urls.first else {
+            if case .failure(let e) = result {
+                statusText = "Import cancelled or failed: \(e.localizedDescription)"
+                isError = true
+            }
+            return
+        }
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let dst = FileManager.default.temporaryDirectory
+                .appendingPathComponent(url.lastPathComponent)
+            if FileManager.default.fileExists(atPath: dst.path) {
+                try FileManager.default.removeItem(at: dst)
+            }
+            try FileManager.default.copyItem(at: url, to: dst)
+            let name = url.lastPathComponent
+            run(status: { r in
+                let n = r.solids ?? 0
+                return "Imported \(name) — \(n) solid\(n == 1 ? "" : "s"). It is now the current body: open the sketch editor, draw, and Finish & Extrude to add or subtract."
+            }) {
+                try CascadeEngine.importSTEP(path: dst.path, name: name, body: currentBody)
+            }
+        } catch {
+            statusText = "Couldn't read that file: \(error.localizedDescription)"
+            isError = true
+        }
     }
 
     private func demoButton(_ title: String, systemImage: String,
@@ -109,7 +199,8 @@ struct ContentView: View {
         .buttonStyle(.borderedProminent)
     }
 
-    private func run(_ action: () throws -> CascadeEngine.Result) {
+    private func run(status: ((CascadeEngine.Result) -> String)? = nil,
+                     _ action: () throws -> CascadeEngine.Result) {
         do {
             let result = try action()
             let newScene = SCNScene()
@@ -142,7 +233,7 @@ struct ContentView: View {
             fmt.maximumFractionDigits = 1
             volumeText = (fmt.string(from: NSNumber(value: result.volume)) ?? "\(result.volume)") + " mm³"
             triangleText = "\(result.triangles)"
-            statusText = "Built by OCCT: \(result.faces) faces, tessellated at 0.1 mm deflection."
+            statusText = status?(result) ?? "Built by OCCT: \(result.faces) faces, tessellated at 0.1 mm deflection."
             isError = false
         } catch let CascadeEngine.EngineError.occt(message) {
             statusText = "OCCT error: \(message)"

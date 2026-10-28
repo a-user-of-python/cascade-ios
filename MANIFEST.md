@@ -29,6 +29,21 @@ façade wraps it rather than approximating it — e.g. fillets are
 `BRepOffsetAPI_MakeThickSolid` (true offset), booleans are
 `BRepAlgoAPI_*`.
 
+**Library form (2026-10-27).** The façade is now presented as
+what it is: the public C API of the **CascadeKit** geometry
+library (the static-library target the apps link). The public
+header `Facade/occt_facade.h` is organised in ten documented
+sections — 1 handles/errors/lifecycle, 2 primitives, 3 profiles,
+4 sketches, 5 booleans, 6 finishing, 7 queries, 8 selection
+census, 9 tessellation, 10 import/export — with the library's
+conventions (units, error model, ownership, shared index spaces)
+stated at the top. No existing signature changed. Section 10 is
+new (see "STEP import" below): `mc_import_step` /
+`mc_export_step`, and the app uses it — an imported STEP file
+becomes the app's *current body*, and the sketch editor's
+Finish & Extrude can then unite the extrusion into the body or
+cut it out (the booleans of section 5, applied by the app).
+
 ## OCCT version
 
 - **Open CASCADE Technology 8.0.1** (source release tarball,
@@ -61,33 +76,67 @@ dependency declarations:
 | TKMesh | 66 (+1 .cpp) | BRepMesh tessellation |
 | TKFillet | 114 | BRepFilletAPI fillet/chamfer |
 | TKOffset | 34 | BRepOffsetAPI pipe (sweep), ThruSections (loft), MakeThickSolid (shell) |
+| TKDE | 6 | DE framework base (configuration/provider bases STEPControl uses) |
+| TKXSBase | 198 | XSControl reader/writer framework, STEP transfer machinery |
+| TKDESTEP | 1,725 | STEPControl reader/writer + the STEP AP203/AP214/AP242 schemas (entity + RW classes) |
+
+The last three rows are the **STEP import expansion** (2026-10-27),
+derived the same way as the original subset: the transitive
+`EXTERNLIB.cmake` closure of the toolkit that holds the STEP
+reader/writer (`STEPControl_Reader` / `STEPControl_Writer` live in
+**TKDESTEP** in OCCT 8.0.1). That closure names 11 further
+toolkits, and they split by what they serve:
+
+- **The shape path** — TKDESTEP, TKDE, TKXSBase (above): everything
+  `STEPControl_Reader` compiles and links against.
+- **The document path** — TKCDF, TKLCAF, TKCAF, TKXCAF, TKVCAF,
+  TKService, TKV3d, TKHLR: these enter the closure only because
+  TKDESTEP also ships OCCT's *XDE document* packages
+  (STEPCAFControl, and the DE-plugin provider pair in DESTEP),
+  which read STEP into an XCAF document (names, colours, assembly
+  structure). The façade imports **geometry**, not documents, so
+  those two packages are excluded — the same treatment GTests
+  already had — and their branch of the closure is not added.
+  Inside TKDESTEP the pruning is exact and verified by include
+  scan: package STEPCAFControl (whole), package DESTEP reduced to
+  `DESTEP_Parameters` (the one class the core path embeds —
+  `StepData_StepModel` holds it by value), and STEPConstruct's two
+  presentation classes (`Styles`, `RenderingProperties` — colour /
+  material conversion used only by the document packages). If a
+  future phase wants document import (names/colours), add the
+  branch toolkits and restore those packages the same way.
 
 Per-package file selection follows OCCT's own package
 `FILES.cmake` lists, plus the package directories' inline include
 files (`.lxx` / `.pxx` / `.gxx`) that OCCT collects by glob — the
 same set OCCT's cmake build compiles. `GTests` directories (unit
-tests, need GoogleTest) are excluded. Totals:
+tests, need GoogleTest) are excluded. Totals (original 15
+toolkits + the STEP expansion's 3):
 
-- **2,018 `.cxx` + 1 `.cpp` + 1 `.c` = 2,020 compilable OCCT sources**
+- **3,947 `.cxx` + 1 `.cpp` + 1 `.c` = 3,949 compilable OCCT sources**
   (the `.cpp` is `BRepMesh/delabella.cpp`, the triangulator bundled
   inside OCCT's TKMesh; the `.c` is TKernel's
   `Resource_ConvertUnicode.c`)
-- **2,919 header files** in `OCCT/src` (`.hxx/.lxx/.pxx/.gxx/.h`)
+- **4,981 header files** in `OCCT/src` (`.hxx/.lxx/.pxx/.gxx/.h`)
 - **1 generated header**: `OCCT/generated/Standard_Version.hxx` —
   the only header OCCT generates (from `adm/templates/
   Standard_Version.hxx.in`); the copy shipped here is the exact
   file OCCT's cmake produced for 8.0.1.
-- `OCCT/` total: **4,942 files, ~62 MB**.
+- `OCCT/` total: **8,933 files, ~84 MB**.
 
-Excluded modules/toolkits, and why: ApplicationFramework, Data
-Exchange (STEP/IGES — TKDE*, TKXCAF, TKXSBase…), Visualization
-(TKV3d, TKOpenGl…), Draw, plus the ModelingAlgorithms toolkits
-nothing in the closure needs: TKHLR (drawing hidden-line removal),
-TKFeat (feature recognition helpers), TKExpress (schema codegen
-runtime), TKHelix (OCCT 8's new helical-sweep toolkit — not needed:
-threads in MetalCAD are profile sweeps, which `mc_sweep` covers),
-TKXMesh (XDE mesh exchange). If a future façade operation needs
-one, add its toolkit and its EXTERNLIB closure the same way.
+Excluded modules/toolkits, and why: ApplicationFramework and
+Visualization (except as the STEP document branch discussed
+above — not added), the rest of Data Exchange (IGES — TKDEIGES;
+glTF/OBJ/PLY/STL/VRML — TKDEGLTF, TKDEOBJ, TKDEPLY, TKDESTL,
+TKDEVRML; XCAF — TKXCAF; RWMesh — TKRWMesh), Draw, plus the
+ModelingAlgorithms toolkits nothing in the closure needs: TKHLR
+(drawing hidden-line removal — only reachable via the document
+branch), TKFeat (feature recognition helpers), TKExpress (schema
+codegen runtime), TKHelix (OCCT 8's new helical-sweep toolkit —
+not needed: threads in MetalCAD are profile sweeps, which
+`mc_sweep` covers), TKXMesh (XDE mesh exchange). If a future
+façade operation needs one, add its toolkit and its EXTERNLIB
+closure the same way.
 
 ## The Linux proof (what was actually run)
 
@@ -436,13 +485,85 @@ kept, as they are the enumeration record):
 RESULT: ALL PASS
 ```
 
+## STEP import (added 2026-10-27)
+
+Two façade functions (library section 10), both direct wraps of
+OCCT's own data-exchange ops — the façade sequences the calls and
+counts solids; it converts nothing itself:
+
+- `mc_import_step(path, *solidCount, err)` — `STEPControl_Reader`:
+  `ReadFile` → `TransferRoots` → `OneShape`. A multi-solid file
+  returns the reader's combined shape (a compound) and
+  `*solidCount` reports how many `TopAbs_SOLID` sub-shapes it
+  holds. The reader converts the file's units to millimetres.
+  **Geometry only**: names, colours and assembly structure are
+  XCAF-document data (see the pruning note in "Subset") and are
+  not imported.
+- `mc_export_step(shape, path, err)` — `STEPControl_Writer` with
+  `STEPControl_AsIs`, mm. Added as import's counterpart — and
+  because a round trip through a file is the honest proof of the
+  reader.
+
+Proof (same harness; whole suite now **127 checks, ALL PASS** —
+the original 111 unchanged, plus the entire expanded subset —
+3,949 sources — compiling with 0 failures):
+
+```
+  [PASS] mc_face_from_sketch (STEP plate)
+  [PASS] mc_prism_face (STEP plate)
+  [PASS] mc_bbox (STEP plate)
+  [PASS] mc_export_step holed plate            (434 entities written)
+  [PASS] mc_import_step round trip
+  volume(STEP plate (re-imported)) = 15214.602 (err=0)
+  [PASS] STEP round trip: volume matches       (15214.602 out, 15214.602 back)
+  [PASS] mc_bbox (re-imported)
+  [PASS] STEP round trip: bbox matches         (every coordinate < 1e-4 mm)
+  [PASS] STEP round trip: solid count == 1
+  [PASS] mc_tessellate imported shape
+  [PASS] raw OCCT writes two-solid STEP        (compound of disjoint boxes,
+                                                written with raw OCCT in the
+                                                test driver — an independent
+                                                writer path)
+  [PASS] mc_import_step two-solid file
+  [PASS] two-solid import: solid count == 2
+  [PASS] two-solid import: volume ~= 1000 + 125  (= 1125.000 measured)
+  [PASS] import of missing file returns an error
+  [PASS] import of garbage file returns an error
+```
+
+Findings from the proof:
+
+- **The reader needs no resource files at runtime** in a bare
+  environment (no `CSF_*` paths), like every other façade op —
+  exercised by this run.
+- One latent host-harness gap surfaced and was fixed in the
+  harness only: `Resource_Unicode.o` (pulled in by the STEP
+  reader's string conversion) needs the subset's single `.c`
+  file, `Resource_ConvertUnicode.c`. The Xcode project always
+  compiled it (it is in the sources phase); the Linux harness
+  now archives it into TKernel the same way it already handled
+  `delabella.cpp`.
+- The STEP reader/writer print transfer statistics to stdout
+  (OCCT's default messenger). Harmless in the app; noted so the
+  console noise is not mistaken for an error.
+
+App behaviour built on this (DemoApp): "Import STEP" copies the
+picked file into the app sandbox and imports it as the **current
+body** (held alive in `CurrentBody`); the sketch editor's
+Finish & Extrude then offers **Add to body** / **Subtract from
+body** / standalone when a body exists. Booleans are
+world-space: the sketch lives on the XZ ground plane at the
+origin and extrudes 10 mm along its normal (today: −Y, so the
+prism occupies y ∈ [−10, 0]) — position expectations should be
+set accordingly until sketch-on-face lands.
+
 ## Xcode project
 
 `CascadePort.xcodeproj`, generated by `gen_project.py` in this
 repo (deterministic md5 UUIDs; regenerating is byte-identical).
 
-- **CascadeKit** (static library): sources = the 2,020 OCCT files +
-  `Facade/occt_facade.cpp`; headers phase = the 2,920 OCCT headers +
+- **CascadeKit** (static library): sources = the 3,949 OCCT files +
+  `Facade/occt_facade.cpp`; headers phase = the 4,982 OCCT headers +
   `OCCT/generated/Standard_Version.hxx` + `Facade/occt_facade.h`.
   Settings: C++17 (`gnu++17`), exceptions ON, RTTI ON, the defines
   above, header search paths as above, iOS 17, arm64,
@@ -452,9 +573,14 @@ repo (deterministic md5 UUIDs; regenerating is byte-identical).
   `DEVELOPMENT_TEAM` (Sean picks his own team in Xcode), links
   `libCascadeKit.a`, façade reached through
   `DemoApp/CascadeDemo-Bridging-Header.h`. The app contains no
-  geometry logic: five buttons → façade calls → SceneKit display
-  (the fifth is the sketch plate: entities described as Swift
-  arrays → `mc_face_from_sketch` → `mc_prism_face` → render).
+  geometry logic: buttons → façade calls → SceneKit display
+  (the sketch plate: entities described as Swift arrays →
+  `mc_face_from_sketch` → `mc_prism_face` → render; **Import
+  STEP**: file picker → sandbox copy → `mc_import_step`, the
+  imported shape held as the app's current body; the MetalCAD
+  sketch editor's Finish & Extrude then offers Add
+  (`mc_unite`) / Subtract (`mc_subtract`) against that body
+  alongside the standalone extrude).
 
 ## Where iOS/Xcode may differ from the Linux proof (honest list)
 

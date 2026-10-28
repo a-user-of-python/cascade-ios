@@ -1,7 +1,8 @@
-// occt_facade.cpp — implementation of the thin OCCT pass-through.
-// Every function below is: translate inputs -> call the OCCT
-// operation named in occt_facade.h -> translate the result -> return.
-// No CAD logic lives here; see occt_facade.h for the principle.
+// occt_facade.cpp — implementation of the CascadeKit geometry
+// library's public C API (occt_facade.h). Every function below is:
+// translate inputs -> call the OCCT operation named in the header ->
+// translate the result -> return. No CAD logic lives here; see
+// occt_facade.h for the principle and the API map.
 
 #include "occt_facade.h"
 
@@ -41,6 +42,10 @@
 #include <Bnd_Box.hxx>
 #include <GC_MakeArcOfCircle.hxx>
 #include <GC_MakeSegment.hxx>
+#include <IFSelect_ReturnStatus.hxx>
+#include <STEPControl_Reader.hxx>
+#include <STEPControl_StepModelType.hxx>
+#include <STEPControl_Writer.hxx>
 #include <GProp_GProps.hxx>
 #include <GeomAbs_CurveType.hxx>
 #include <GeomAbs_JoinType.hxx>
@@ -1115,6 +1120,59 @@ int mc_tessellate(MCFacadeShape* s, double deflectionMM, MCFacadeMesh* out,
     return MC_OK;
   } catch (const Standard_Failure& e) {
     setOcctError(err, "mc_tessellate", e);
+    return MC_ERR_OCCT;
+  }
+}
+
+// ------------------------------------------------------------ import / export
+
+MCFacadeShape* mc_import_step(const char* path, int* solidCount, int* err) {
+  if (!path || !*path) {
+    fail(err, MC_ERR_INVALID_ARG, "mc_import_step: empty path");
+    return nullptr;
+  }
+  try {
+    STEPControl_Reader reader;
+    if (reader.ReadFile(path) != IFSelect_RetDone) {
+      fail(err, MC_ERR_OCCT,
+           "mc_import_step: STEP reader could not read the file");
+      return nullptr;
+    }
+    reader.TransferRoots();
+    const TopoDS_Shape shape = reader.OneShape();
+    if (shape.IsNull()) {
+      fail(err, MC_ERR_EMPTY_RESULT,
+           "mc_import_step: file contains no shape");
+      return nullptr;
+    }
+    if (solidCount) {
+      int n = 0;
+      for (TopExp_Explorer ex(shape, TopAbs_SOLID); ex.More(); ex.Next()) ++n;
+      *solidCount = n;
+    }
+    return wrap(shape, err);
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_import_step", e);
+    return nullptr;
+  }
+}
+
+int mc_export_step(MCFacadeShape* s, const char* path, int* err) {
+  if (!s || !path || !*path) {
+    return fail(err, MC_ERR_INVALID_ARG, "mc_export_step: bad argument");
+  }
+  try {
+    STEPControl_Writer writer;
+    if (writer.Transfer(shapeOf(s), STEPControl_AsIs) != IFSelect_RetDone) {
+      return fail(err, MC_ERR_OCCT, "mc_export_step: transfer failed");
+    }
+    if (writer.Write(path) != IFSelect_RetDone) {
+      return fail(err, MC_ERR_OCCT, "mc_export_step: write failed");
+    }
+    if (err) *err = MC_OK;
+    return MC_OK;
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_export_step", e);
     return MC_ERR_OCCT;
   }
 }

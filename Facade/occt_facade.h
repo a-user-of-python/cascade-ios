@@ -1,8 +1,17 @@
-// occt_facade.h — thin, COMPLETE pass-through from C (and Swift) to
-// the Open CASCADE (OCCT) geometry libraries.
+// ============================================================================
+// CascadeKit — geometry library for the Cascade apps
+// Public C API  (this header is the library's entire public interface)
+// ============================================================================
 //
-// ARCHITECTURE PRINCIPLE (Sean's rule for the port): everything above
-// this layer is Swift. Swift decides WHAT to build; OCCT's own
+// CascadeKit is a C++ library built on the Open CASCADE Technology
+// (OCCT) 8.0.1 libraries. It packages OCCT's modelling toolkits plus
+// this façade into one static library (the `CascadeKit` target); the
+// host app links the library and calls only the functions declared
+// here. The header is plain C so any host language with a C FFI
+// (the apps use Swift through a bridging header) can consume it.
+//
+// ARCHITECTURE PRINCIPLE (Sean's rule): the host app drives; Cascade
+// does the geometry. The app decides WHAT to build; OCCT's own
 // libraries do ALL the geometry. This façade therefore contains no
 // CAD feature logic and no geometry math of its own — each function
 // only translates arguments and buffers across the C ABI, calls the
@@ -13,9 +22,40 @@
 // If an operation exists in OCCT, it is wrapped here rather than
 // approximated. Handles are opaque; no C++ type crosses the ABI.
 //
-// Units are millimetres everywhere. All returned buffers are
-// malloc-owned by the caller and released with the matching free
-// function.
+// CONVENTIONS
+// - Units are millimetres and radians everywhere (angles noted
+//   per-function where they differ).
+// - Every function that can fail takes a trailing `int* err`
+//   out-parameter (which may be NULL) and stores an MCFacadeError
+//   code there; handle-returning functions return NULL on failure,
+//   value-returning functions return the code itself. After any
+//   failure, mc_last_error() describes it in words.
+// - Ownership: a returned MCFacadeShape* is owned by the caller and
+//   released with mc_free_shape(); a returned MCFacadeMesh's buffers
+//   are released with mc_free_mesh(). Input handles are never
+//   consumed — boolean/finishing operations leave their inputs
+//   unchanged and return new handles.
+// - Index spaces: face / edge / vertex indices are shared by the
+//   census, tessellation and finishing sections (see "Selection
+//   census") for as long as the shape handle is unchanged.
+//
+// API MAP
+//   1. Handles, errors, lifecycle .... MCFacadeShape, mc_free_shape
+//   2. Primitives .................... mc_box, mc_cylinder, ...
+//   3. Profiles ...................... mc_prism, mc_revolve, ...
+//   4. Sketches ...................... mc_face_from_sketch, mc_prism_face
+//   5. Booleans ...................... mc_unite, mc_subtract, mc_intersect
+//   6. Finishing ..................... mc_fillet, mc_chamfer, mc_shell
+//   7. Queries ....................... mc_volume, mc_bbox, mc_contains, ...
+//   8. Selection census .............. mc_shape_counts, mc_face_info, ...
+//   9. Tessellation .................. mc_tessellate, mc_free_mesh
+//  10. Import / export (STEP) ........ mc_import_step, mc_export_step
+//
+// LICENCE: the library's OCCT part is Open CASCADE Technology
+// 8.0.1, (c) Open Cascade SAS, GNU LGPL 2.1 with the Open CASCADE
+// exception (texts at OCCT/LICENSE_LGPL_21.txt and
+// OCCT/OCCT_LGPL_EXCEPTION.txt in this repo). This façade is the
+// project's own code. No OCCT library source is modified.
 #pragma once
 
 #include <stddef.h>
@@ -23,6 +63,10 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// ============================================================================
+// 1. Handles, errors, lifecycle
+// ============================================================================
 
 /// Opaque shape handle (wraps a TopoDS_Shape). The struct is given a
 /// complete definition — a single façade-private pointer — because
@@ -48,7 +92,13 @@ const char* mc_last_error(void);
 /// OCCT version string of the linked libraries, e.g. "8.0.1".
 const char* mc_occt_version(void);
 
-// ---------------------------------------------------------------- primitives
+/// Release a shape handle obtained from any function in this header.
+/// NULL is accepted and does nothing.
+void mc_free_shape(MCFacadeShape* s);
+
+// ============================================================================
+// 2. Primitives
+// ============================================================================
 // Direct wraps of BRepPrimAPI_MakeBox / MakeCylinder / MakeSphere /
 // MakeCone.
 
@@ -61,7 +111,9 @@ MCFacadeShape* mc_sphere(double r, int* err);
 /// Cone: base radius r1 at z=0, top radius r2 at z=h, axis +Z.
 MCFacadeShape* mc_cone(double r1, double r2, double h, int* err);
 
-// ---------------------------------------------------------------- profiles
+// ============================================================================
+// 3. Profiles
+// ============================================================================
 // A profile is a planar polygon: `xy` holds `n` 2D points (u,v
 // pairs). The profile plane is given by `origin` and the `xAxis` /
 // `yAxis` 3D directions (a profile point (u,v) maps to
@@ -102,7 +154,9 @@ MCFacadeShape* mc_sweep(const double* xy, int n,
                         const double yAxis[3], const double* pathPts,
                         int pathCount, int* err);
 
-// ---------------------------------------------------------------- sketches
+// ============================================================================
+// 4. Sketches
+// ============================================================================
 // A sketch is a set of 2D entities on a plane: line segments,
 // circles and circular arcs, grouped into closed profiles. The
 // entities are built as real OCCT objects (gp_Circ / Geom curves,
@@ -166,7 +220,9 @@ MCFacadeShape* mc_face_from_sketch(const double origin[3],
 MCFacadeShape* mc_prism_face(MCFacadeShape* face, const double dir[3],
                              double dist, int* err);
 
-// ---------------------------------------------------------------- booleans
+// ============================================================================
+// 5. Booleans
+// ============================================================================
 // Direct wraps of BRepAlgoAPI_Fuse / Cut / Common. Inputs are left
 // unchanged; the result is a new handle the caller owns.
 
@@ -174,7 +230,9 @@ MCFacadeShape* mc_unite(MCFacadeShape* a, MCFacadeShape* b, int* err);
 MCFacadeShape* mc_subtract(MCFacadeShape* a, MCFacadeShape* b, int* err);
 MCFacadeShape* mc_intersect(MCFacadeShape* a, MCFacadeShape* b, int* err);
 
-// ---------------------------------------------------------------- edge ops
+// ============================================================================
+// 6. Finishing (edge operations + shell)
+// ============================================================================
 
 /// Edge indices are 0-based positions in the shape's edge
 /// enumeration — the shared census index space defined in the
@@ -196,7 +254,9 @@ MCFacadeShape* mc_chamfer(MCFacadeShape* s, double dist,
 /// offset inward by `thickness` mm, no faces removed (no openings).
 MCFacadeShape* mc_shell(MCFacadeShape* s, double thickness, int* err);
 
-// ---------------------------------------------------------------- queries
+// ============================================================================
+// 7. Queries
+// ============================================================================
 
 /// BRepGProp volume of the shape (mm^3).
 double mc_volume(MCFacadeShape* s, int* err);
@@ -215,7 +275,9 @@ int mc_edge_count(MCFacadeShape* s, int* err);
 /// error (*err set). Shapes without a solid report MC_ERR_OCCT.
 int mc_contains(MCFacadeShape* s, double x, double y, double z, int* err);
 
-// ------------------------------------------------------- selection census
+// ============================================================================
+// 8. Selection census
+// ============================================================================
 // Index spaces. Faces, edges and vertices are enumerated in
 // TopExp traversal order over the shape: each distinct sub-shape
 // is taken at its first occurrence (the enumeration
@@ -249,8 +311,8 @@ int mc_face_info(MCFacadeShape* s, int faceIndex, double* area,
                  double center[3], double normal[3], int* isPlanar,
                  int* err);
 
-/// Per-edge info for edge `edgeIndex` (census order):
-/// `curveType` is 0 = line, 1 = circle, 2 = other
+/// Per-edge info for edge `edgeIndex` (census order): `curveType`
+/// is 0 = line, 1 = circle, 2 = other
 /// (BRepAdaptor_Curve); `length` via BRepGProp::LinearProperties
 /// (OCCT 8.0.1's name for the edge-properties entry point);
 /// `start` / `end` are the points of the edge's first / last
@@ -261,7 +323,9 @@ int mc_edge_info(MCFacadeShape* s, int edgeIndex, int* curveType,
                  double* length, double start[3], double end[3],
                  double center[3], double* radius, int* err);
 
-// ---------------------------------------------------------------- tessellation
+// ============================================================================
+// 9. Tessellation
+// ============================================================================
 
 /// Caller-visible tessellation result (BRepMesh_IncrementalMesh +
 /// Poly_Triangulation readback). positions/normals are 3 floats per
@@ -288,7 +352,41 @@ typedef struct MCFacadeMesh {
 int mc_tessellate(MCFacadeShape* s, double deflectionMM, MCFacadeMesh* out,
                   int* err);
 void mc_free_mesh(MCFacadeMesh* m);
-void mc_free_shape(MCFacadeShape* s);
+
+// ============================================================================
+// 10. Import / export — STEP
+// ============================================================================
+// Direct wraps of OCCT's STEP data-exchange reader/writer
+// (STEPControl_Reader / STEPControl_Writer, the libraries' own
+// ops). STEP is the first exchange format; the reader transfers
+// GEOMETRY ONLY: product names, colours and assembly-document
+// structure live in OCCT's XCAF document layer, which this library
+// build deliberately does not include (see MANIFEST.md) — an
+// imported multi-part file arrives as one compound shape, not as
+// a named assembly.
+
+/// Read a STEP file (AP203 / AP214 / AP242) from the filesystem
+/// path `path` (UTF-8) and return its shape. All of the file's
+/// roots are transferred and combined the way OCCT's reader
+/// combines them (OneShape): a file holding several solids yields
+/// a compound handle. When `solidCount` is non-NULL it receives
+/// the number of solids (TopAbs_SOLID sub-shapes) inside the
+/// result, so the caller can tell a single solid from a
+/// multi-solid compound. The reader converts the file's units to
+/// millimetres (OCCT's own behaviour).
+///
+/// Errors: a missing/unreadable file or a file the reader rejects
+/// is MC_ERR_OCCT; a file that reads but contains no shape is
+/// MC_ERR_EMPTY_RESULT. Never returns a partial shape.
+MCFacadeShape* mc_import_step(const char* path, int* solidCount, int* err);
+
+/// Write the shape to a STEP file at `path` (UTF-8), AP214 format
+/// as OCCT's writer produces it (STEPControl_AsIs: solids stay
+/// solids, compounds stay compounds), lengths in millimetres.
+/// Returns MC_OK on success. The counterpart of mc_import_step —
+/// a shape written and re-imported keeps its volume, bounding box
+/// and solid count (proven by the library's host test suite).
+int mc_export_step(MCFacadeShape* s, const char* path, int* err);
 
 #ifdef __cplusplus
 }

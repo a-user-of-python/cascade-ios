@@ -1,10 +1,12 @@
 import Foundation
 import SceneKit
+import Combine // ObservableObject / @Published for CurrentBody
 
-/// Thin Swift-side caller for the Cascade façade.
+/// Thin Swift-side caller for the CascadeKit library (the OCCT
+/// façade, Facade/occt_facade.h).
 ///
 /// This file contains NO geometry logic: each function calls the
-/// façade (which calls Open CASCADE directly), then converts the
+/// library (which calls Open CASCADE directly), then converts the
 /// returned tessellation buffers into a SceneKit geometry for
 /// display. Swift decides what to build; OCCT does the geometry.
 enum CascadeEngine {
@@ -14,10 +16,24 @@ enum CascadeEngine {
         var volume: Double
         var triangles: Int
         var faces: Int
+        /// Solid count, when the producing call knows it (STEP
+        /// import); nil otherwise.
+        var solids: Int? = nil
     }
 
     enum EngineError: Error {
         case occt(String)
+    }
+
+    /// How a finished sketch applies when the editor's
+    /// "Finish & Extrude" runs.
+    enum ExtrudeMode {
+        /// The extruded solid stands alone (the original behaviour).
+        case standalone
+        /// Unite the extruded solid into the current body.
+        case add
+        /// Cut the extruded solid out of the current body.
+        case subtract
     }
 
     private static func lastError() -> String {
@@ -25,12 +41,19 @@ enum CascadeEngine {
     }
 
     /// Run a façade build closure that returns a shape handle, then
-    /// tessellate + measure it. The closure is responsible for
-    /// freeing any intermediate handles it creates.
+    /// tessellate + measure it (the handle is freed afterwards).
+    /// The closure is responsible for freeing any intermediate
+    /// handles it creates.
     private static func render(_ build: () throws -> UnsafeMutablePointer<MCFacadeShape>) throws -> Result {
         let shape = try build()
         defer { mc_free_shape(shape) }
+        return try measure(shape)
+    }
 
+    /// Tessellate + measure a shape handle WITHOUT freeing it —
+    /// the caller keeps ownership (the current body stays alive
+    /// across calls this way).
+    private static func measure(_ shape: UnsafeMutablePointer<MCFacadeShape>) throws -> Result {
         var err: Int32 = 0
         let volume = mc_volume(shape, &err)
         guard err == MC_OK.rawValue else { throw EngineError.occt(lastError()) }
@@ -204,7 +227,8 @@ enum CascadeEngine {
 
     /// Extrude a sketch from MetalCAD's real sketch editor (the
     /// Sketch/SketchSolver slice copied into this app) through the
-    /// façade. The kit validates and structures the profiles —
+    /// façade, returning the solid as a raw handle (the caller
+    /// owns it). The kit validates and structures the profiles —
     /// `extractProfiles()` is the same call the editor's Finish
     /// button makes, so the same coded CADError messages surface.
     /// The sketch's entities then map 1:1 onto the façade's sketch
@@ -212,7 +236,7 @@ enum CascadeEngine {
     /// the face, and the face is prismed 10 mm along the sketch
     /// plane's normal. With several disjoint profiles, each is
     /// prismed on its own and the solids are united.
-    static func sketchExtrude(sketch: Sketch) throws -> Result {
+    private static func buildSketchSolid(sketch: Sketch) throws -> UnsafeMutablePointer<MCFacadeShape> {
         let profiles: [Profile]
         do {
             profiles = try sketch.extractProfiles().profiles
@@ -285,7 +309,10 @@ enum CascadeEngine {
         }
 
         let plane = sketch.plane
-        return try render {
+        // (This block was the body of the render closure before the
+        // handle-returning refactor; its `return` below is the
+        // function's own return of the owned solid handle.)
+        do {
             var err: Int32 = 0
             let origin: [Double] = [plane.origin.x, plane.origin.y, plane.origin.z]
             let normal: [Double] = [plane.normal.x, plane.normal.y, plane.normal.z]
@@ -334,6 +361,62 @@ enum CascadeEngine {
         }
     }
 
+    /// The editor's "Finish & Extrude", with the edit mode applied:
+    /// standalone shows the extruded solid on its own; add/subtract
+    /// boolean it against the CURRENT BODY (mc_unite / mc_subtract,
+    /// both OCCT ops) and the result becomes the new current body.
+    /// Without a current body, add/subtract are an error — the UI
+    /// only offers them when a body exists.
+    static func sketchExtrude(sketch: Sketch, mode: ExtrudeMode,
+                              body: CurrentBody) throws -> Result {
+        let solid = try buildSketchSolid(sketch: sketch)
+        switch mode {
+        case .standalone:
+            defer { mc_free_shape(solid) }
+            return try measure(solid)
+        case .add, .subtract:
+            guard let current = body.handle else {
+                mc_free_shape(solid)
+                throw EngineError.occt("There is no current body to edit. Import a STEP file first.")
+            }
+            var err: Int32 = 0
+            let combined = mode == .add ? mc_unite(current, solid, &err)
+                                        : mc_subtract(current, solid, &err)
+            mc_free_shape(solid)
+            guard let combined else { throw EngineError.occt(lastError()) }
+            do {
+                let result = try measure(combined)
+                body.install(combined) // frees the previous body
+                return result
+            } catch {
+                mc_free_shape(combined)
+                throw error
+            }
+        }
+    }
+
+    /// Import a STEP file as the current body. The library reads
+    /// the geometry (mc_import_step); the imported handle stays
+    /// alive in `body` so later sketch edits can add to / subtract
+    /// from it, and the tessellation is returned for display.
+    static func importSTEP(path: String, name: String,
+                           body: CurrentBody) throws -> Result {
+        var err: Int32 = 0
+        var solids: Int32 = 0
+        guard let handle = mc_import_step(path, &solids, &err) else {
+            throw EngineError.occt(lastError())
+        }
+        do {
+            var result = try measure(handle)
+            result.solids = Int(solids)
+            body.install(handle, label: name)
+            return result
+        } catch {
+            mc_free_shape(handle)
+            throw error
+        }
+    }
+
     private static func endpoints(of e: SketchEntity) -> [Vec2] {
         switch e {
         case .line(_, let a, let b, _): return [a, b]
@@ -365,5 +448,32 @@ enum CascadeEngine {
         case .point:
             break
         }
+    }
+}
+
+/// Owns the app's CURRENT BODY: the one shape that stays alive
+/// between calls so sketch edits can add to / subtract from it.
+/// Set by STEP import; replaced by the result of every add /
+/// subtract. The five canned demo builds are display-only and
+/// never touch it.
+final class CurrentBody: ObservableObject {
+    /// The live façade handle (owned here; freed on replace/deinit).
+    private(set) var handle: UnsafeMutablePointer<MCFacadeShape>?
+
+    /// Short label for the UI (the imported file's name).
+    @Published private(set) var label: String?
+
+    var exists: Bool { handle != nil }
+
+    /// Take ownership of `h` (the caller relinquishes it); any
+    /// previous body is freed. `label` updates only when given.
+    func install(_ h: UnsafeMutablePointer<MCFacadeShape>, label newLabel: String? = nil) {
+        if let old = handle { mc_free_shape(old) }
+        handle = h
+        if let newLabel { label = newLabel }
+    }
+
+    deinit {
+        if let h = handle { mc_free_shape(h) }
     }
 }
