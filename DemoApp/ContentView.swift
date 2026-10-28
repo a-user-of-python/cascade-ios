@@ -113,7 +113,6 @@ struct ContentView: View {
                 .lineLimit(2)
         }
         .padding(16)
-        .onAppear { DocumentsSeed.runOnce() }
         .fullScreenCover(isPresented: $showSketchEditor, onDismiss: sketchEditorDismissed) {
             SketchEditorView(model: sketchModel, sketchID: EditorModel.hostedSketchID)
         }
@@ -259,16 +258,18 @@ struct ModelView: UIViewRepresentable {
     }
 }
 
-/// In-app STEP import list: scans the app's Documents folder and
-/// Documents/Inbox (where files shared into the app land) for
-/// .step / .stp files, newest first. This replaces the system
-/// document picker entirely — under some signing setups the picker
-/// cannot select files from the Files app, so files are copied
-/// into "On My iPad → Cascade Demo" in the Files app instead
-/// (the folder is visible because Info.plist sets
-/// UIFileSharingEnabled + LSSupportsOpeningDocumentsInPlace) and
-/// picked here. Every listed file already lives inside the app
-/// sandbox, so its path goes straight to the library.
+/// In-app STEP import list: scans Documents/Cascade (seeded at
+/// launch by CascadeFolders — the folder Sean copies files into),
+/// the Documents root, and Documents/Inbox (where files shared
+/// into the app land) for .step / .stp files, newest first. This
+/// replaces the system document picker entirely — under some
+/// signing setups the picker cannot select files from the Files
+/// app, so files are copied into "On My iPad → Cascade Demo →
+/// Cascade" in the Files app instead (the app's Documents are
+/// shared because Info.plist sets UIFileSharingEnabled +
+/// LSSupportsOpeningDocumentsInPlace) and picked here. Every
+/// listed file already lives inside the app sandbox, so its path
+/// goes straight to the library.
 struct StepImportListView: View {
     var onPick: (URL) -> Void
 
@@ -293,7 +294,7 @@ struct StepImportListView: View {
 
             if files.isEmpty {
                 Spacer()
-                Text("No STEP files yet. In the Files app, copy a .step file into On My iPad → Cascade Demo, then come back and tap Refresh.")
+                Text("No STEP files yet. In the Files app, copy a .step file into On My iPad → Cascade Demo → Cascade, then come back and tap Refresh.")
                     .font(.title3)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 8)
@@ -327,30 +328,39 @@ struct StepImportListView: View {
     }
 }
 
-/// First-launch seeding of the app's Documents folder. The folder
-/// only reliably appears under Files → On My iPad once the app has
-/// run and the folder actually holds something, so on the first
-/// appearance of the main UI we drop in a README (what the folder
-/// is for) and a ready-to-import sample STEP (the sketch plate,
-/// exported by the library itself) — plus make sure Documents/Inbox
-/// exists. Every write is guarded by existence: later launches find
-/// the files in place and change nothing, and files Sean edits or
-/// replaces are never overwritten.
-enum DocumentsSeed {
-    static func runOnce() {
+/// Folder manager, NOVA-style (the pattern NovaVM uses to get a
+/// working folder in the Files app): at app launch, CREATE a named
+/// folder tree inside Documents and seed it so nothing is empty —
+/// Documents/Cascade/ holds a README and a ready-to-import sample
+/// STEP (the sketch plate, exported by the library itself), and
+/// Documents/Inbox/ exists for files shared into the app. iOS
+/// surfaces the app under Files → On My iPad once the app has run
+/// and its Documents actually contain this tree. Everything is
+/// idempotent: existing files are never overwritten, so later
+/// launches change nothing.
+enum CascadeFolders {
+    /// Documents/Cascade, the folder Sean copies STEP files into.
+    static func cascadeFolder(_ fm: FileManager = .default) -> URL? {
+        fm.urls(for: .documentDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Cascade", isDirectory: true)
+    }
+
+    static func setup() {
         let fm = FileManager.default
-        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first,
+              let cascade = cascadeFolder(fm) else { return }
 
-        let inbox = docs.appendingPathComponent("Inbox", isDirectory: true)
-        try? fm.createDirectory(at: inbox, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: cascade, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: docs.appendingPathComponent("Inbox", isDirectory: true),
+                                withIntermediateDirectories: true)
 
-        let readme = docs.appendingPathComponent("README.txt")
+        let readme = cascade.appendingPathComponent("README.txt")
         if !fm.fileExists(atPath: readme.path) {
             let text = """
-            Cascade Demo — STEP import folder
+            Cascade — STEP import folder
 
-            Put .step files in this folder (Cascade Demo in the Files app),
-            then open the app and tap Import STEP.
+            Put .step files in this folder — Files app → On My iPad →
+            Cascade Demo → Cascade — then open the app and tap Import STEP.
 
             sample-plate.step is already here: import it in the app to try
             the sketch tools and FEM right away.
@@ -358,10 +368,10 @@ enum DocumentsSeed {
             try? text.write(to: readme, atomically: true, encoding: .utf8)
         }
 
-        let sample = docs.appendingPathComponent("sample-plate.step")
+        let sample = cascade.appendingPathComponent("sample-plate.step")
         if !fm.fileExists(atPath: sample.path) {
             // Best effort: if the export fails, the README alone
-            // still materializes the folder.
+            // still leaves the folder non-empty.
             CascadeEngine.exportSketchPlate(toPath: sample.path)
         }
     }
@@ -375,15 +385,20 @@ struct StepFileEntry: Identifiable {
     let modified: Date
     var id: URL { url }
 
-    /// Documents + Documents/Inbox, .step / .stp only
-    /// (case-insensitive), newest modification first.
+    /// Documents/Cascade first (the folder CascadeFolders seeds at
+    /// launch and Sean copies files into), then the Documents root
+    /// and Documents/Inbox — no location a file can land in is a
+    /// dead end. .step / .stp only (case-insensitive), newest
+    /// modification first.
     static func scan() -> [StepFileEntry] {
         let fm = FileManager.default
         guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { return [] }
-        let folders: [(url: URL, label: String)] = [
-            (docs, "Documents"),
-            (docs.appendingPathComponent("Inbox", isDirectory: true), "Inbox"),
-        ]
+        var folders: [(url: URL, label: String)] = []
+        if let cascade = CascadeFolders.cascadeFolder(fm) {
+            folders.append((cascade, "Cascade folder"))
+        }
+        folders.append((docs, "Documents"))
+        folders.append((docs.appendingPathComponent("Inbox", isDirectory: true), "Inbox"))
         let sizeFmt = ByteCountFormatter()
         sizeFmt.countStyle = .file
         let dateFmt = DateFormatter()
