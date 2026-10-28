@@ -113,6 +113,7 @@ struct ContentView: View {
                 .lineLimit(2)
         }
         .padding(16)
+        .onAppear { DocumentsSeed.runOnce() }
         .fullScreenCover(isPresented: $showSketchEditor, onDismiss: sketchEditorDismissed) {
             SketchEditorView(model: sketchModel, sketchID: EditorModel.hostedSketchID)
         }
@@ -323,6 +324,46 @@ struct StepImportListView: View {
 
     private func scan() {
         files = StepFileEntry.scan()
+    }
+}
+
+/// First-launch seeding of the app's Documents folder. The folder
+/// only reliably appears under Files → On My iPad once the app has
+/// run and the folder actually holds something, so on the first
+/// appearance of the main UI we drop in a README (what the folder
+/// is for) and a ready-to-import sample STEP (the sketch plate,
+/// exported by the library itself) — plus make sure Documents/Inbox
+/// exists. Every write is guarded by existence: later launches find
+/// the files in place and change nothing, and files Sean edits or
+/// replaces are never overwritten.
+enum DocumentsSeed {
+    static func runOnce() {
+        let fm = FileManager.default
+        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+
+        let inbox = docs.appendingPathComponent("Inbox", isDirectory: true)
+        try? fm.createDirectory(at: inbox, withIntermediateDirectories: true)
+
+        let readme = docs.appendingPathComponent("README.txt")
+        if !fm.fileExists(atPath: readme.path) {
+            let text = """
+            Cascade Demo — STEP import folder
+
+            Put .step files in this folder (Cascade Demo in the Files app),
+            then open the app and tap Import STEP.
+
+            sample-plate.step is already here: import it in the app to try
+            the sketch tools and FEM right away.
+            """
+            try? text.write(to: readme, atomically: true, encoding: .utf8)
+        }
+
+        let sample = docs.appendingPathComponent("sample-plate.step")
+        if !fm.fileExists(atPath: sample.path) {
+            // Best effort: if the export fails, the README alone
+            // still materializes the folder.
+            CascadeEngine.exportSketchPlate(toPath: sample.path)
+        }
     }
 }
 

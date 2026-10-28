@@ -184,43 +184,63 @@ enum CascadeEngine {
     /// are described as data only — Open CASCADE builds the edges,
     /// the wire, the face and the solid.
     static func sketchPlate() throws -> Result {
-        try render {
-            var err: Int32 = 0
-            // Sketch plane: XY at the origin, normal +Z, +U = +X.
-            let origin: [Double] = [0, 0, 0]
-            let normal: [Double] = [0, 0, 1]
-            let xDir: [Double] = [1, 0, 0]
-            // Entity kinds: 0 = line (x1,y1,x2,y2), 1 = circle
-            // (cx,cy,r), 2 = arc (cx,cy,r,start,end radians CCW).
-            // Six doubles per entity, unused slots are 0.
-            let entityTypes: [Int32] = [0, 2, 0, 2, 0, 2, 0, 2, 1]
-            let entityData: [Double] = [
-                6, 0, 54, 0, 0, 0,                       // line
-                54, 6, 6, -Double.pi / 2, 0, 0,          // corner arc
-                60, 6, 60, 34, 0, 0,                     // line
-                54, 34, 6, 0, Double.pi / 2, 0,          // corner arc
-                54, 40, 6, 40, 0, 0,                     // line
-                6, 34, 6, Double.pi / 2, Double.pi, 0,   // corner arc
-                0, 34, 0, 6, 0, 0,                       // line
-                6, 6, 6, Double.pi, 3 * Double.pi / 2, 0, // corner arc
-                30, 20, 8, 0, 0, 0,                      // hole circle
-            ]
-            // Profile 0 = the outline (entities 0..<8),
-            // profile 1 = the hole (entity 8..<9).
-            let profileStarts: [Int32] = [0, 8, 9]
-            guard let face = mc_face_from_sketch(origin, normal, xDir,
-                                                 entityTypes, entityData,
-                                                 Int32(entityTypes.count),
-                                                 profileStarts, 2, &err) else {
-                throw EngineError.occt(lastError())
-            }
-            defer { mc_free_shape(face) }
-            let dir: [Double] = [0, 0, 1]
-            guard let s = mc_prism_face(face, dir, 8, &err) else {
-                throw EngineError.occt(lastError())
-            }
-            return s
+        try render { try buildSketchPlateShape() }
+    }
+
+    /// Build the sketch-plate solid and return its handle (the
+    /// caller owns it). Shared by the on-screen demo build and the
+    /// first-launch STEP export that seeds the Documents folder.
+    private static func buildSketchPlateShape() throws -> UnsafeMutablePointer<MCFacadeShape> {
+        var err: Int32 = 0
+        // Sketch plane: XY at the origin, normal +Z, +U = +X.
+        let origin: [Double] = [0, 0, 0]
+        let normal: [Double] = [0, 0, 1]
+        let xDir: [Double] = [1, 0, 0]
+        // Entity kinds: 0 = line (x1,y1,x2,y2), 1 = circle
+        // (cx,cy,r), 2 = arc (cx,cy,r,start,end radians CCW).
+        // Six doubles per entity, unused slots are 0.
+        let entityTypes: [Int32] = [0, 2, 0, 2, 0, 2, 0, 2, 1]
+        let entityData: [Double] = [
+            6, 0, 54, 0, 0, 0,                       // line
+            54, 6, 6, -Double.pi / 2, 0, 0,          // corner arc
+            60, 6, 60, 34, 0, 0,                     // line
+            54, 34, 6, 0, Double.pi / 2, 0,          // corner arc
+            54, 40, 6, 40, 0, 0,                     // line
+            6, 34, 6, Double.pi / 2, Double.pi, 0,   // corner arc
+            0, 34, 0, 6, 0, 0,                       // line
+            6, 6, 6, Double.pi, 3 * Double.pi / 2, 0, // corner arc
+            30, 20, 8, 0, 0, 0,                      // hole circle
+        ]
+        // Profile 0 = the outline (entities 0..<8),
+        // profile 1 = the hole (entity 8..<9).
+        let profileStarts: [Int32] = [0, 8, 9]
+        guard let face = mc_face_from_sketch(origin, normal, xDir,
+                                             entityTypes, entityData,
+                                             Int32(entityTypes.count),
+                                             profileStarts, 2, &err) else {
+            throw EngineError.occt(lastError())
         }
+        defer { mc_free_shape(face) }
+        let dir: [Double] = [0, 0, 1]
+        guard let s = mc_prism_face(face, dir, 8, &err) else {
+            throw EngineError.occt(lastError())
+        }
+        return s
+    }
+
+    /// Write the sketch plate out as a STEP file through the
+    /// library (mc_export_step). Used once per install to seed the
+    /// Documents folder with a real, importable sample; silently
+    /// returns false on any failure (the caller treats the sample
+    /// as best-effort — the README seed is what guarantees the
+    /// folder shows up in the Files app).
+    @discardableResult
+    static func exportSketchPlate(toPath path: String) -> Bool {
+        guard let shape = try? buildSketchPlateShape() else { return false }
+        defer { mc_free_shape(shape) }
+        var err: Int32 = 0
+        return mc_export_step(shape, path, &err) == MC_OK.rawValue
+            && err == MC_OK.rawValue
     }
 
     // MARK: - MetalCAD sketch -> Cascade solid
