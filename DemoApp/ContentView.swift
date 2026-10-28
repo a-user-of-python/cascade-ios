@@ -179,7 +179,10 @@ struct ContentView: View {
         let name = url.lastPathComponent
         run(status: { r in
             let n = r.solids ?? 0
-            return "Imported \(name) — \(n) solid\(n == 1 ? "" : "s"). It is now the current body: open the sketch editor, draw, and Finish & Extrude to add or subtract."
+            let colourNote = r.faceColors != nil
+                ? " Shown in the colours from the file."
+                : ""
+            return "Imported \(name) — \(n) solid\(n == 1 ? "" : "s").\(colourNote) It is now the current body: open the sketch editor, draw, and Finish & Extrude to add or subtract."
         }) {
             try CascadeEngine.importSTEP(path: url.path, name: name, body: currentBody)
         }

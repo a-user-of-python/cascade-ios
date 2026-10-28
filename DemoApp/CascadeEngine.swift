@@ -19,6 +19,11 @@ enum CascadeEngine {
         /// Solid count, when the producing call knows it (STEP
         /// import); nil otherwise.
         var solids: Int? = nil
+        /// STEP surface colours per census face, when the import
+        /// carried any (faces without a colour hold the standard
+        /// body gray, ready for display); nil when the file had
+        /// no colours — the node then uses the plain material.
+        var faceColors: [(r: Double, g: Double, b: Double)]? = nil
     }
 
     enum EngineError: Error {
@@ -50,10 +55,42 @@ enum CascadeEngine {
         return try measure(shape)
     }
 
+    /// The shape's STEP surface colours per census face, when the
+    /// handle came from an import whose file carried colours
+    /// (mc_shape_face_colors). Faces with no colour of their own
+    /// hold the standard body gray so callers can use the array
+    /// directly for display. Returns nil when NO face has a
+    /// colour (or the query fails) — the no-colour path then
+    /// behaves exactly as before.
+    static func faceColors(of shape: UnsafeMutablePointer<MCFacadeShape>)
+        -> [(r: Double, g: Double, b: Double)]? {
+        var err: Int32 = 0
+        var faces: Int32 = 0
+        guard mc_shape_counts(shape, &faces, nil, nil, &err) == MC_OK.rawValue,
+              faces > 0 else { return nil }
+        var rgb = [Double](repeating: 0, count: Int(faces) * 3)
+        var has = [Int32](repeating: 0, count: Int(faces))
+        guard mc_shape_face_colors(shape, &rgb, &has, &err) == MC_OK.rawValue
+        else { return nil }
+        var any = false
+        var out: [(r: Double, g: Double, b: Double)] = []
+        out.reserveCapacity(Int(faces))
+        for i in 0 ..< Int(faces) {
+            if has[i] != 0 {
+                any = true
+                out.append((rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2]))
+            } else {
+                out.append((0.85, 0.88, 0.92))
+            }
+        }
+        return any ? out : nil
+    }
+
     /// Tessellate + measure a shape handle WITHOUT freeing it —
     /// the caller keeps ownership (the current body stays alive
     /// across calls this way).
-    private static func measure(_ shape: UnsafeMutablePointer<MCFacadeShape>) throws -> Result {
+    private static func measure(_ shape: UnsafeMutablePointer<MCFacadeShape>,
+                                faceColors: [(r: Double, g: Double, b: Double)]? = nil) throws -> Result {
         var err: Int32 = 0
         let volume = mc_volume(shape, &err)
         guard err == MC_OK.rawValue else { throw EngineError.occt(lastError()) }
@@ -65,14 +102,17 @@ enum CascadeEngine {
         }
         defer { mc_free_mesh(&mesh) }
 
-        let node = makeNode(from: mesh)
-        return Result(node: node,
-                      volume: volume,
-                      triangles: Int(mesh.triangleCount),
-                      faces: Int(mesh.faceCount))
+        let node = makeNode(from: mesh, faceColors: faceColors)
+        var result = Result(node: node,
+                            volume: volume,
+                            triangles: Int(mesh.triangleCount),
+                            faces: Int(mesh.faceCount))
+        result.faceColors = faceColors
+        return result
     }
 
-    private static func makeNode(from mesh: MCFacadeMesh) -> SCNNode {
+    private static func makeNode(from mesh: MCFacadeMesh,
+                                 faceColors: [(r: Double, g: Double, b: Double)]? = nil) -> SCNNode {
         let vcount = Int(mesh.vertexCount)
         let tcount = Int(mesh.triangleCount)
 
@@ -88,24 +128,60 @@ enum CascadeEngine {
                                       mesh.normals[3 * i + 1],
                                       mesh.normals[3 * i + 2]))
         }
-        var indices: [Int32] = []
-        indices.reserveCapacity(tcount * 3)
-        for i in 0..<(tcount * 3) {
-            indices.append(mesh.indices[i])
-        }
 
         let posSource = SCNGeometrySource(vertices: positions)
         let norSource = SCNGeometrySource(normals: normals)
-        let element = SCNGeometryElement(indices: indices, primitiveType: .triangles)
-        let geometry = SCNGeometry(sources: [posSource, norSource], elements: [element])
+        let geometry: SCNGeometry
+        if let faceColors {
+            // Per-face display: one element + material per census
+            // face, coloured from the STEP file (gray fallback is
+            // already baked into the array by faceColors(of:)).
+            var elements: [SCNGeometryElement] = []
+            var materials: [SCNMaterial] = []
+            let fcount = Int(mesh.faceCount)
+            for f in 0 ..< fcount {
+                let start = Int(mesh.faceTriStart[f])
+                let count = Int(mesh.faceTriCount[f])
+                var idx: [Int32] = []
+                idx.reserveCapacity(count * 3)
+                for i in (3 * start) ..< (3 * (start + count)) {
+                    idx.append(mesh.indices[i])
+                }
+                elements.append(SCNGeometryElement(indices: idx,
+                                                   primitiveType: .triangles))
+                let c = f < faceColors.count
+                    ? faceColors[f] : (r: 0.85, g: 0.88, b: 0.92)
+                let material = SCNMaterial()
+                material.lightingModel = .physicallyBased
+                material.diffuse.contents = UIColor(red: CGFloat(c.r),
+                                                    green: CGFloat(c.g),
+                                                    blue: CGFloat(c.b),
+                                                    alpha: 1.0)
+                material.metalness.contents = 0.1
+                material.roughness.contents = 0.55
+                material.isDoubleSided = true
+                materials.append(material)
+            }
+            geometry = SCNGeometry(sources: [posSource, norSource],
+                                   elements: elements)
+            geometry.materials = materials
+        } else {
+            var indices: [Int32] = []
+            indices.reserveCapacity(tcount * 3)
+            for i in 0..<(tcount * 3) {
+                indices.append(mesh.indices[i])
+            }
+            let element = SCNGeometryElement(indices: indices, primitiveType: .triangles)
+            geometry = SCNGeometry(sources: [posSource, norSource], elements: [element])
 
-        let material = SCNMaterial()
-        material.lightingModel = .physicallyBased
-        material.diffuse.contents = UIColor(red: 0.85, green: 0.88, blue: 0.92, alpha: 1.0)
-        material.metalness.contents = 0.1
-        material.roughness.contents = 0.55
-        material.isDoubleSided = true
-        geometry.materials = [material]
+            let material = SCNMaterial()
+            material.lightingModel = .physicallyBased
+            material.diffuse.contents = UIColor(red: 0.85, green: 0.88, blue: 0.92, alpha: 1.0)
+            material.metalness.contents = 0.1
+            material.roughness.contents = 0.55
+            material.isDoubleSided = true
+            geometry.materials = [material]
+        }
 
         let node = SCNNode(geometry: geometry)
         // OCCT is Z-up; SceneKit is Y-up. Rotate for display only:
@@ -416,9 +492,11 @@ enum CascadeEngine {
     }
 
     /// Import a STEP file as the current body. The library reads
-    /// the geometry (mc_import_step); the imported handle stays
+    /// the geometry (mc_import_step) and remembers the file's
+    /// surface colours on the handle; the imported handle stays
     /// alive in `body` so later sketch edits can add to / subtract
-    /// from it, and the tessellation is returned for display.
+    /// from it, and the tessellation is returned for display —
+    /// coloured per face when the file carried colours.
     static func importSTEP(path: String, name: String,
                            body: CurrentBody) throws -> Result {
         var err: Int32 = 0
@@ -427,7 +505,8 @@ enum CascadeEngine {
             throw EngineError.occt(lastError())
         }
         do {
-            var result = try measure(handle)
+            let colors = faceColors(of: handle)
+            var result = try measure(handle, faceColors: colors)
             result.solids = Int(solids)
             body.install(handle, label: name)
             return result

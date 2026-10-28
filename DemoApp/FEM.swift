@@ -135,6 +135,11 @@ private struct BodyTess {
     var faceTriCount: [Int32]
     var faceCount: Int
     var bbox: [Double]  // xmin ymin zmin xmax ymax zmax
+    /// STEP surface colours per census face, when the body's
+    /// import carried any (see CascadeEngine.faceColors); nil when
+    /// the file had none. Faces beyond the array (none expected)
+    /// fall back to the standard gray in baseColor(forFace:).
+    var faceColors: [(r: Double, g: Double, b: Double)]?
 
     init(shape: UnsafeMutablePointer<MCFacadeShape>) throws {
         var err: Int32 = 0
@@ -159,6 +164,16 @@ private struct BodyTess {
         faceCount = Int(mesh.faceCount)
         faceTriStart = (0 ..< faceCount).map { mesh.faceTriStart[$0] }
         faceTriCount = (0 ..< faceCount).map { mesh.faceTriCount[$0] }
+        faceColors = CascadeEngine.faceColors(of: shape)
+    }
+
+    /// Display colour for census face `f`: its STEP colour when
+    /// the import provided one, else the app's standard body gray.
+    func baseColor(forFace f: Int) -> (Double, Double, Double) {
+        if let faceColors, f >= 0, f < faceColors.count {
+            return faceColors[f]
+        }
+        return (0.85, 0.88, 0.92)
     }
 
     /// Census face for a SceneKit hit-test triangle ordinal.
@@ -214,6 +229,10 @@ extension PickableView.Coordinator {
     @objc func handleTap(_ gesture: UITapGestureRecognizer) {
         guard let view = gesture.view as? SCNView, let tess else { return }
         let point = gesture.location(in: view)
+        // SCNView.hitTest returns hits nearest-first, so hits.first
+        // is the front surface under the finger — the face the user
+        // sees and means. Its triangle ordinal maps to the census
+        // face through the tessellation's per-face ranges.
         let hits = view.hitTest(point, options: nil)
         guard let hit = hits.first,
               let face = tess.face(forTriangle: hit.faceIndex) else { return }
@@ -272,6 +291,13 @@ struct FemPanelView: View {
     }
 
     @State private var scene = SCNScene()
+    /// The selection scene is built ONCE per body and kept: a tap
+    /// recolours only the tapped face's material in place (see
+    /// applyFaceColor), it never rebuilds geometry. selectionScene
+    /// is the instance; selectionMaterials is its per-face material
+    /// list in census order.
+    @State private var selectionScene: SCNScene?
+    @State private var selectionMaterials: [SCNMaterial] = []
     @State private var tess: BodyTess?
     @State private var mode: PickMode = .fix
     @State private var fixedFaces: Set<Int> = []
@@ -288,149 +314,162 @@ struct FemPanelView: View {
     @State private var driftText: String?
 
     var body: some View {
-        VStack(spacing: 10) {
-            HStack {
-                Text("FEM analysis")
-                    .font(.system(size: 28, weight: .bold))
-                Spacer()
-                Button("Done") { dismiss() }
-                    .buttonStyle(.bordered)
-            }
-            Text("Basic linear stress analysis — voxel mesh.")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            ZStack {
-                PickableView(scene: scene, tess: tess) { face in
-                    tapFace(face)
-                }
-                if busy {
-                    ProgressView()
-                        .controlSize(.large)
-                        .padding(20)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .layoutPriority(1)
-            .background(Color(white: 0.12))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-
-            if femResult != nil {
-                legend
-            }
-
-            Text(statusText)
-                .font(.title3)
-                .foregroundStyle(isError ? .red : .primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .lineLimit(3)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    Picker("Tap mode", selection: $mode) {
-                        ForEach(PickMode.allCases, id: \.self) { m in
-                            Text(m.rawValue).tag(m)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-
-                    HStack {
-                        Text("Fixed: \(faceList(fixedFaces))")
-                        Spacer()
-                        Text("Loaded: \(faceList(loadedFaces))")
-                    }
-                    .font(.headline)
-                    if !fixedFaces.isEmpty || !loadedFaces.isEmpty {
-                        Button("Clear faces") {
-                            fixedFaces.removeAll()
-                            loadedFaces.removeAll()
-                            refreshScene()
-                        }
+        // Layout contract (this is the fix for the panel Sean hit,
+        // where only Fix/Unfix was reachable): the GeometryReader
+        // pins the stack to the panel's real height, the 3D view
+        // takes a BOUNDED dominant share of it (54%), and every
+        // control lives in the ScrollView that takes exactly the
+        // remaining height — so no control can ever be pushed
+        // below the screen edge, in either orientation. The old
+        // layout let the view claim the full proposed height
+        // (maxHeight .infinity + layoutPriority 1), which laid the
+        // whole control stack out off-screen.
+        GeometryReader { geo in
+            VStack(spacing: 10) {
+                HStack {
+                    Text("FEM analysis")
+                        .font(.system(size: 28, weight: .bold))
+                    Spacer()
+                    Button("Done") { dismiss() }
                         .buttonStyle(.bordered)
-                    }
+                }
+                Text("Basic linear stress analysis — voxel mesh.")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                    HStack(spacing: 12) {
-                        Text("Force per loaded face").font(.headline)
-                        TextField("N", value: $forceN, format: .number)
-                            .textFieldStyle(.roundedBorder)
-                            .keyboardType(.decimalPad)
-                            .frame(width: 110)
-                        Text("N").font(.headline)
-                        Stepper("", value: $forceN, in: 1 ... 1_000_000, step: 100)
-                            .labelsHidden()
+                ZStack {
+                    PickableView(scene: scene, tess: tess) { face in
+                        tapFace(face)
                     }
-                    Picker("Direction", selection: $pushIn) {
-                        Text("Push in").tag(true)
-                        Text("Pull out").tag(false)
+                    if busy {
+                        ProgressView()
+                            .controlSize(.large)
+                            .padding(20)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
                     }
-                    .pickerStyle(.segmented)
+                }
+                .frame(height: Swift.max(200, geo.size.height * 0.54))
+                .background(Color(white: 0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 16))
 
-                    Picker("Material", selection: $material) {
-                        ForEach(MaterialPreset.allCases, id: \.self) { m in
-                            Text(m.label).tag(m)
-                        }
-                    }
-                    .pickerStyle(.segmented)
+                if femResult != nil {
+                    legend
+                }
 
-                    Picker("Mesh size", selection: $meshSize) {
-                        ForEach(MeshSize.allCases, id: \.self) { m in
-                            Text(m.rawValue).tag(m)
-                        }
-                    }
-                    .pickerStyle(.segmented)
+                Text(statusText)
+                    .font(.title3)
+                    .foregroundStyle(isError ? .red : .primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(3)
 
-                    HStack(spacing: 10) {
-                        Button {
-                            buildMesh()
-                        } label: {
-                            Label("Mesh", systemImage: "grid")
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Picker("Tap mode", selection: $mode) {
+                            ForEach(PickMode.allCases, id: \.self) { m in
+                                Text(m.rawValue).tag(m)
+                            }
                         }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(busy || tess == nil)
-                        Button {
-                            solve()
-                        } label: {
-                            Label("Solve", systemImage: "play.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(busy || femMesh == nil || fixedFaces.isEmpty || loadedFaces.isEmpty)
-                        Button {
-                            resetResults()
-                        } label: {
-                            Label("Reset view", systemImage: "arrow.counterclockwise")
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(busy || femResult == nil)
-                    }
+                        .pickerStyle(.segmented)
 
-                    if let mesh = femMesh {
-                        Text("Mesh: \(mesh.nodeCount) nodes, \(mesh.elementCount) elements, voxel \(fmt(mesh.voxelSize)) mm. Mesh volume \(fmt(mesh.volume)) mm³.")
-                            .font(.headline)
-                    }
-                    if let driftText {
-                        Text(driftText)
-                            .font(.headline)
-                            .foregroundStyle(.orange)
-                    }
-                    if let r = femResult {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Max von Mises: \(fmt(r.maxVonMises)) MPa")
-                                .font(.system(size: 26, weight: .bold, design: .rounded))
-                            Text("Max displacement: \(fmtDisp(r.maxDisplacement)) mm")
-                                .font(.system(size: 26, weight: .bold, design: .rounded))
-                            Text("Solver: \(r.iterations) iterations, residual \(String(format: "%.2g", r.relResidual)).")
+                        HStack {
+                            Text("Fixed: \(faceList(fixedFaces))")
+                            Spacer()
+                            Text("Loaded: \(faceList(loadedFaces))")
+                        }
+                        .font(.headline)
+                        if !fixedFaces.isEmpty || !loadedFaces.isEmpty {
+                            Button("Clear faces") {
+                                fixedFaces.removeAll()
+                                loadedFaces.removeAll()
+                                applyAllFaceColors()
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
+                        HStack(spacing: 12) {
+                            Text("Force per loaded face").font(.headline)
+                            TextField("N", value: $forceN, format: .number)
+                                .textFieldStyle(.roundedBorder)
+                                .keyboardType(.decimalPad)
+                                .frame(width: 110)
+                            Text("N").font(.headline)
+                            Stepper("", value: $forceN, in: 1 ... 1_000_000, step: 100)
+                                .labelsHidden()
+                        }
+                        Picker("Direction", selection: $pushIn) {
+                            Text("Push in").tag(true)
+                            Text("Pull out").tag(false)
+                        }
+                        .pickerStyle(.segmented)
+
+                        Picker("Material", selection: $material) {
+                            ForEach(MaterialPreset.allCases, id: \.self) { m in
+                                Text(m.label).tag(m)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+
+                        Picker("Mesh size", selection: $meshSize) {
+                            ForEach(MeshSize.allCases, id: \.self) { m in
+                                Text(m.rawValue).tag(m)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+
+                        HStack(spacing: 10) {
+                            Button {
+                                buildMesh()
+                            } label: {
+                                Label("Mesh", systemImage: "grid")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(busy || tess == nil)
+                            Button {
+                                solve()
+                            } label: {
+                                Label("Solve", systemImage: "play.fill")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(busy || femMesh == nil || fixedFaces.isEmpty || loadedFaces.isEmpty)
+                            Button {
+                                resetResults()
+                            } label: {
+                                Label("Reset view", systemImage: "arrow.counterclockwise")
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(busy || femResult == nil)
+                        }
+
+                        if let mesh = femMesh {
+                            Text("Mesh: \(mesh.nodeCount) nodes, \(mesh.elementCount) elements, voxel \(fmt(mesh.voxelSize)) mm. Mesh volume \(fmt(mesh.volume)) mm³.")
                                 .font(.headline)
-                                .foregroundStyle(.secondary)
+                        }
+                        if let driftText {
+                            Text(driftText)
+                                .font(.headline)
+                                .foregroundStyle(.orange)
+                        }
+                        if let r = femResult {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Max von Mises: \(fmt(r.maxVonMises)) MPa")
+                                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                                Text("Max displacement: \(fmtDisp(r.maxDisplacement)) mm")
+                                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                                Text("Solver: \(r.iterations) iterations, residual \(String(format: "%.2g", r.relResidual)).")
+                                    .font(.headline)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxHeight: .infinity)
             }
-            .frame(maxHeight: 330)
+            .padding(16)
+            .frame(width: geo.size.width, height: geo.size.height,
+                   alignment: .top)
         }
-        .padding(16)
         .onAppear { setUp() }
     }
 
@@ -498,7 +537,12 @@ struct FemPanelView: View {
             statusText = "Face \(face) \(loadedFaces.contains(face) ? "loaded (orange)" : "unloaded")."
         }
         isError = false
-        refreshScene()
+        // Recolour ONLY the tapped face's material, in place, in
+        // the already-displayed scene — no geometry rebuild, no
+        // scene swap. (The old path rebuilt the entire scene —
+        // hundreds of elements and materials — on every tap,
+        // which is what made picking feel janky.)
+        applyFaceColor(face)
     }
 
     private func buildMesh() {
@@ -641,8 +685,53 @@ struct FemPanelView: View {
     private func refreshScene() {
         if let mesh = femMesh, let result = femResult {
             scene = makeResultScene(mesh: mesh, result: result)
-        } else if let t = tess {
-            scene = makeSelectionScene(tess: t)
+        } else if let selectionScene {
+            scene = selectionScene
+        } else if tess != nil {
+            buildSelectionScene()
+            if let selectionScene {
+                scene = selectionScene
+            }
+        }
+    }
+
+    /// Build the selection scene once for the current body and
+    /// remember its per-face materials for in-place recolouring.
+    private func buildSelectionScene() {
+        guard let t = tess else { return }
+        let built = makeSelectionScene(tess: t)
+        selectionScene = built.scene
+        selectionMaterials = built.materials
+    }
+
+    /// The one place selection colours are decided: fixed = blue,
+    /// loaded = orange, otherwise the face's base colour — its
+    /// STEP colour when the import carried one, else the standard
+    /// body gray.
+    private func displayColor(forFace f: Int, tess t: BodyTess) -> UIColor {
+        if fixedFaces.contains(f) {
+            return UIColor(red: 0.2, green: 0.45, blue: 1.0, alpha: 1.0)
+        }
+        if loadedFaces.contains(f) {
+            return UIColor(red: 1.0, green: 0.45, blue: 0.1, alpha: 1.0)
+        }
+        let c = t.baseColor(forFace: f)
+        return UIColor(red: CGFloat(c.0), green: CGFloat(c.1),
+                       blue: CGFloat(c.2), alpha: 1.0)
+    }
+
+    /// Recolour one face's material in the live selection scene.
+    private func applyFaceColor(_ f: Int) {
+        guard let t = tess, f >= 0, f < selectionMaterials.count else { return }
+        selectionMaterials[f].diffuse.contents = displayColor(forFace: f, tess: t)
+    }
+
+    /// Recolour every face (Clear faces).
+    private func applyAllFaceColors() {
+        guard let t = tess else { return }
+        for f in 0 ..< selectionMaterials.count {
+            selectionMaterials[f].diffuse.contents =
+                displayColor(forFace: f, tess: t)
         }
     }
 
@@ -692,8 +781,12 @@ struct FemPanelView: View {
     }
 
     /// The body with one geometry element per B-rep face, so faces
-    /// colour by selection state (fixed = blue, loaded = orange).
-    private func makeSelectionScene(tess t: BodyTess) -> SCNScene {
+    /// colour by selection state (fixed = blue, loaded = orange,
+    /// base = STEP colour or standard gray). Built once per body;
+    /// also returns the per-face materials so taps can recolour
+    /// them in place.
+    private func makeSelectionScene(tess t: BodyTess)
+        -> (scene: SCNScene, materials: [SCNMaterial]) {
         var positions: [SCNVector3] = []
         positions.reserveCapacity(t.positions.count / 3)
         var normals: [SCNVector3] = []
@@ -717,16 +810,7 @@ struct FemPanelView: View {
                                                primitiveType: .triangles))
             let mat = SCNMaterial()
             mat.lightingModel = .physicallyBased
-            if fixedFaces.contains(f) {
-                mat.diffuse.contents = UIColor(red: 0.2, green: 0.45,
-                                               blue: 1.0, alpha: 1.0)
-            } else if loadedFaces.contains(f) {
-                mat.diffuse.contents = UIColor(red: 1.0, green: 0.45,
-                                               blue: 0.1, alpha: 1.0)
-            } else {
-                mat.diffuse.contents = UIColor(red: 0.85, green: 0.88,
-                                               blue: 0.92, alpha: 1.0)
-            }
+            mat.diffuse.contents = displayColor(forFace: f, tess: t)
             mat.metalness.contents = 0.1
             mat.roughness.contents = 0.55
             mat.isDoubleSided = true
@@ -735,7 +819,7 @@ struct FemPanelView: View {
         let geometry = SCNGeometry(sources: [posSource, norSource],
                                    elements: elements)
         geometry.materials = materials
-        return framedScene(geometry: geometry)
+        return (framedScene(geometry: geometry), materials)
     }
 
     /// The voxel mesh's boundary surface, vertex-coloured by node

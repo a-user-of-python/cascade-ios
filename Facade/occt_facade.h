@@ -337,6 +337,30 @@ int mc_edge_info(MCFacadeShape* s, int edgeIndex, int* curveType,
                  double* length, double start[3], double end[3],
                  double center[3], double* radius, int* err);
 
+/// Per-face surface colours, in the census face index space.
+/// Only handles returned by mc_import_step can carry colours:
+/// the import also reads the file through OCCT's XDE document
+/// layer (STEPCAFControl_Reader, colours enabled) and matches
+/// XCAFDoc_ColorTool surface colours onto this shape's census
+/// faces — a face-level colour when the document assigns one to
+/// that face, otherwise the colour of the solid that contains
+/// the face. The two reads produce different shape instances, so
+/// the match is geometric (face area + centroid, then solid
+/// containment) — exact STEP colours land on the exact faces for
+/// ordinary files, proven by the host test suite with a
+/// two-solid coloured file.
+///
+/// `outRGB` receives 3 doubles per census face (red, green, blue
+/// in 0..1); `outHasColor` receives 1 int per face: 1 when the
+/// file gave this face a colour, 0 otherwise (outRGB then 0).
+/// Both arrays are caller-allocated with room for the face count
+/// from mc_shape_counts; either may be NULL to skip it. Shapes
+/// that did not come from mc_import_step (and imports whose file
+/// carried no colours) succeed with every hasColor = 0. Returns
+/// MC_OK on success.
+int mc_shape_face_colors(MCFacadeShape* s, double* outRGB,
+                         int* outHasColor, int* err);
+
 // ============================================================================
 // 9. Tessellation
 // ============================================================================
@@ -372,12 +396,15 @@ void mc_free_mesh(MCFacadeMesh* m);
 // ============================================================================
 // Direct wraps of OCCT's STEP data-exchange reader/writer
 // (STEPControl_Reader / STEPControl_Writer, the libraries' own
-// ops). STEP is the first exchange format; the reader transfers
-// GEOMETRY ONLY: product names, colours and assembly-document
-// structure live in OCCT's XCAF document layer, which this library
-// build deliberately does not include (see MANIFEST.md) — an
-// imported multi-part file arrives as one compound shape, not as
-// a named assembly.
+// ops). STEP is the first exchange format. The reader transfers
+// geometry; in addition, mc_import_step runs a second read of the
+// same file through OCCT's XDE document layer
+// (STEPCAFControl_Reader + XCAFDoc_ColorTool) and remembers the
+// file's surface colours per census face — query them with
+// mc_shape_face_colors() in section 8. Product names and
+// assembly-document structure are still NOT imported: an imported
+// multi-part file arrives as one compound shape, not as a named
+// assembly.
 
 /// Read a STEP file (AP203 / AP214 / AP242) from the filesystem
 /// path `path` (UTF-8) and return its shape. All of the file's

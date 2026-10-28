@@ -50,6 +50,17 @@
 #include <GC_MakeArcOfCircle.hxx>
 #include <GC_MakeSegment.hxx>
 #include <IFSelect_ReturnStatus.hxx>
+#include <BRep_Builder.hxx>
+#include <NCollection_IndexedDataMap.hxx>
+#include <NCollection_List.hxx>
+#include <Quantity_Color.hxx>
+#include <STEPCAFControl_Reader.hxx>
+#include <TDF_Label.hxx>
+#include <TDocStd_Document.hxx>
+#include <TopoDS_Compound.hxx>
+#include <XCAFDoc_ColorTool.hxx>
+#include <XCAFDoc_DocumentTool.hxx>
+#include <XCAFDoc_ShapeTool.hxx>
 #include <STEPControl_Reader.hxx>
 #include <STEPControl_StepModelType.hxx>
 #include <STEPControl_Writer.hxx>
@@ -81,16 +92,31 @@
 
 // MCFacadeShape itself is defined in occt_facade.h (a single opaque
 // void* member, so Swift's ClangImporter can import the type). The
-// pointer holds a heap TopoDS_Shape owned by the handle.
+// pointer holds a heap ShapeImpl owned by the handle: the shape
+// itself, plus — only for handles returned by mc_import_step — the
+// STEP surface colours matched onto the shape's census faces
+// (3 RGB doubles + a flag per face; empty when the file carried
+// no colours). See loadStepColors() below.
 
 namespace {
 
-// Accessor for the wrapped shape (the handle's _impl points to it).
-TopoDS_Shape& shapeOf(MCFacadeShape* h) {
-  return *static_cast<TopoDS_Shape*>(h->_impl);
+struct ShapeImpl {
+  TopoDS_Shape shape;
+  std::vector<std::array<double, 3>> faceRGB;
+  std::vector<char> faceHas;
+};
+
+ShapeImpl& implOf(MCFacadeShape* h) {
+  return *static_cast<ShapeImpl*>(h->_impl);
 }
+const ShapeImpl& implOf(const MCFacadeShape* h) {
+  return *static_cast<const ShapeImpl*>(h->_impl);
+}
+
+// Accessor for the wrapped shape (the handle's _impl points to it).
+TopoDS_Shape& shapeOf(MCFacadeShape* h) { return implOf(h).shape; }
 const TopoDS_Shape& shapeOf(const MCFacadeShape* h) {
-  return *static_cast<const TopoDS_Shape*>(h->_impl);
+  return implOf(h).shape;
 }
 
 thread_local std::string g_lastError;
@@ -108,7 +134,9 @@ MCFacadeShape* wrap(const TopoDS_Shape& s, int* err) {
   }
   if (err) *err = MC_OK;
   auto* h = new MCFacadeShape();
-  h->_impl = new TopoDS_Shape(s);
+  auto* impl = new ShapeImpl();
+  impl->shape = s;
+  h->_impl = impl;
   return h;
 }
 
@@ -575,6 +603,137 @@ double femVonMises(const double s[6]) {
   const double d1 = s[0] - s[1], d2 = s[1] - s[2], d3 = s[2] - s[0];
   return std::sqrt(0.5 * (d1 * d1 + d2 * d2 + d3 * d3) +
                    3.0 * (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]));
+}
+
+// ------------------------------------------------------- STEP colours
+// Best-effort surface-colour read for mc_import_step: reads the
+// same file a second way, through OCCT's XDE document layer
+// (STEPCAFControl_Reader into a TDocStd_Document created directly
+// — no application object, no presentation drivers), and matches
+// XCAFDoc_ColorTool surface colours onto the census faces of the
+// shape the plain reader produced. The document's shapes are
+// different instances from the imported shape's, so the match is
+// geometric: a census face first looks for a document face with
+// the same area and centroid that carries a face colour; failing
+// that, it takes the colour of the document solid that contains
+// its centroid. Any failure anywhere leaves the handle colourless
+// — colours are decoration and never fail an import.
+void loadStepColors(const char* path, ShapeImpl* impl) {
+  try {
+    STEPCAFControl_Reader reader;
+    reader.SetColorMode(Standard_True);
+    if (reader.ReadFile(path) != IFSelect_RetDone) return;
+    Handle(TDocStd_Document) doc = new TDocStd_Document("MDTV-XCAF");
+    if (!reader.Transfer(doc)) return;
+    Handle(XCAFDoc_ShapeTool) shapeTool =
+        XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+    Handle(XCAFDoc_ColorTool) colorTool =
+        XCAFDoc_DocumentTool::ColorTool(doc->Main());
+    if (shapeTool.IsNull() || colorTool.IsNull()) return;
+
+    // The document's free shapes in one compound, for traversal.
+    NCollection_Sequence<TDF_Label> freeLabels;
+    shapeTool->GetFreeShapes(freeLabels);
+    if (freeLabels.IsEmpty()) return;
+    BRep_Builder bb;
+    TopoDS_Compound compound;
+    bb.MakeCompound(compound);
+    for (int i = 1; i <= freeLabels.Length(); ++i) {
+      TopoDS_Shape s;
+      if (shapeTool->GetShape(freeLabels.Value(i), s) && !s.IsNull())
+        bb.Add(compound, s);
+    }
+
+    // Document faces with their solid ancestors and their own
+    // face colours (if any); document solids with their colours.
+    struct DocFace {
+      double area;
+      gp_Pnt centre;
+      bool hasColor;
+      std::array<double, 3> rgb;
+    };
+    std::vector<DocFace> docFaces;
+    NCollection_IndexedDataMap<TopoDS_Shape,
+                               NCollection_List<TopoDS_Shape>,
+                               TopTools_ShapeMapHasher>
+        faceAncestors;
+    TopExp::MapShapesAndAncestors(compound, TopAbs_FACE, TopAbs_SOLID,
+                                  faceAncestors);
+    for (int i = 1; i <= faceAncestors.Extent(); ++i) {
+      const TopoDS_Shape& df = faceAncestors.FindKey(i);
+      GProp_GProps props;
+      BRepGProp::SurfaceProperties(df, props);
+      DocFace rec;
+      rec.area = props.Mass();
+      rec.centre = props.CentreOfMass();
+      Quantity_Color col;
+      rec.hasColor = colorTool->GetColor(df, XCAFDoc_ColorSurf, col);
+      rec.rgb = {col.Red(), col.Green(), col.Blue()};
+      docFaces.push_back(rec);
+    }
+    struct DocSolid {
+      TopoDS_Shape shape;
+      bool hasColor;
+      std::array<double, 3> rgb;
+    };
+    std::vector<DocSolid> docSolids;
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>
+        solidMap;
+    TopExp::MapShapes(compound, TopAbs_SOLID, solidMap);
+    for (int i = 1; i <= solidMap.Extent(); ++i) {
+      DocSolid rec;
+      rec.shape = solidMap.FindKey(i);
+      Quantity_Color col;
+      rec.hasColor = colorTool->GetColor(rec.shape, XCAFDoc_ColorSurf, col);
+      rec.rgb = {col.Red(), col.Green(), col.Blue()};
+      docSolids.push_back(rec);
+    }
+    bool anyColor = false;
+    for (const DocFace& d : docFaces) anyColor = anyColor || d.hasColor;
+    for (const DocSolid& d : docSolids) anyColor = anyColor || d.hasColor;
+    if (!anyColor) return;
+
+    // Census faces of the imported shape (the shared index space).
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>
+        faceMap;
+    TopExp::MapShapes(impl->shape, TopAbs_FACE, faceMap);
+    const int nFaces = faceMap.Extent();
+    impl->faceRGB.assign(nFaces, {0.0, 0.0, 0.0});
+    impl->faceHas.assign(nFaces, 0);
+    for (int i = 1; i <= nFaces; ++i) {
+      GProp_GProps props;
+      BRepGProp::SurfaceProperties(faceMap.FindKey(i), props);
+      const double area = props.Mass();
+      const gp_Pnt centre = props.CentreOfMass();
+      // 1) a document face with this face's own colour.
+      bool matched = false;
+      for (const DocFace& d : docFaces) {
+        if (!d.hasColor) continue;
+        if (std::fabs(d.area - area) > 1e-4 * std::max(1.0, area))
+          continue;
+        if (d.centre.Distance(centre) > 1e-3) continue;
+        impl->faceRGB[i - 1] = d.rgb;
+        impl->faceHas[i - 1] = 1;
+        matched = true;
+        break;
+      }
+      if (matched) continue;
+      // 2) the colour of the document solid containing the face.
+      for (const DocSolid& d : docSolids) {
+        if (!d.hasColor) continue;
+        BRepClass3d_SolidClassifier cls(d.shape, centre,
+                                        Precision::Confusion());
+        if (cls.State() == TopAbs_IN || cls.State() == TopAbs_ON) {
+          impl->faceRGB[i - 1] = d.rgb;
+          impl->faceHas[i - 1] = 1;
+          break;
+        }
+      }
+    }
+  } catch (...) {
+    impl->faceRGB.clear();
+    impl->faceHas.clear();
+  }
 }
 
 }  // namespace
@@ -1196,6 +1355,36 @@ int mc_edge_info(MCFacadeShape* s, int edgeIndex, int* curveType,
   }
 }
 
+int mc_shape_face_colors(MCFacadeShape* s, double* outRGB,
+                         int* outHasColor, int* err) {
+  if (!s) {
+    return fail(err, MC_ERR_INVALID_ARG,
+                "mc_shape_face_colors: null shape");
+  }
+  try {
+    const ShapeImpl& impl = implOf(s);
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>
+        faceMap;
+    TopExp::MapShapes(impl.shape, TopAbs_FACE, faceMap);
+    const int n = faceMap.Extent();
+    const bool have = (int)impl.faceHas.size() == n;
+    for (int i = 0; i < n; ++i) {
+      const bool has = have && impl.faceHas[i] != 0;
+      if (outHasColor) outHasColor[i] = has ? 1 : 0;
+      if (outRGB) {
+        outRGB[3 * i + 0] = has ? impl.faceRGB[i][0] : 0.0;
+        outRGB[3 * i + 1] = has ? impl.faceRGB[i][1] : 0.0;
+        outRGB[3 * i + 2] = has ? impl.faceRGB[i][2] : 0.0;
+      }
+    }
+    if (err) *err = MC_OK;
+    return MC_OK;
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_shape_face_colors", e);
+    return MC_ERR_OCCT;
+  }
+}
+
 // ------------------------------------------------------------ tessellation
 
 int mc_tessellate(MCFacadeShape* s, double deflectionMM, MCFacadeMesh* out,
@@ -1317,7 +1506,9 @@ MCFacadeShape* mc_import_step(const char* path, int* solidCount, int* err) {
       for (TopExp_Explorer ex(shape, TopAbs_SOLID); ex.More(); ex.Next()) ++n;
       *solidCount = n;
     }
-    return wrap(shape, err);
+    MCFacadeShape* h = wrap(shape, err);
+    if (h) loadStepColors(path, &implOf(h));  // best-effort; see above
+    return h;
   } catch (const Standard_Failure& e) {
     setOcctError(err, "mc_import_step", e);
     return nullptr;
@@ -2071,7 +2262,7 @@ void mc_free_mesh(MCFacadeMesh* m) {
 
 void mc_free_shape(MCFacadeShape* s) {
   if (!s) return;
-  delete static_cast<TopoDS_Shape*>(s->_impl);
+  delete static_cast<ShapeImpl*>(s->_impl);
   delete s;
 }
 

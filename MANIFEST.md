@@ -81,14 +81,19 @@ dependency declarations:
 | TKOffset | 34 | BRepOffsetAPI pipe (sweep), ThruSections (loft), MakeThickSolid (shell) |
 | TKDE | 6 | DE framework base (configuration/provider bases STEPControl uses) |
 | TKXSBase | 198 | XSControl reader/writer framework, STEP transfer machinery |
-| TKDESTEP | 1,725 | STEPControl reader/writer + the STEP AP203/AP214/AP242 schemas (entity + RW classes) |
+| TKDESTEP | 1,735 | STEPControl reader/writer + the STEP AP203/AP214/AP242 schemas (entity + RW classes) + STEPCAFControl (XDE STEP read/write) |
+| TKCDF | 45 | document framework base: CDF, CDM, LDOM, PCDM, UTL |
+| TKLCAF | 95 | document framework: TDF, TDataStd, TDocStd, TFunction, AppStdL |
+| TKCAF | 31 | TDataXtd, TNaming, AppStd |
+| TKXCAF | 44 | XDE document tools: XCAFDoc (incl. the colour tool), XCAFDimTolObjects, XCAFNoteObjects, XCAFView, XCAFPrs data classes |
+| TKService | 98 | Graphic3d / Aspect / Image / Font / Media data classes (see the pruning note) |
 
-The last three rows are the **STEP import expansion** (2026-10-27),
-derived the same way as the original subset: the transitive
-`EXTERNLIB.cmake` closure of the toolkit that holds the STEP
-reader/writer (`STEPControl_Reader` / `STEPControl_Writer` live in
-**TKDESTEP** in OCCT 8.0.1). That closure names 11 further
-toolkits, and they split by what they serve:
+The TKDE/TKXSBase/TKDESTEP rows are the **STEP import expansion**
+(2026-10-27), derived the same way as the original subset: the
+transitive `EXTERNLIB.cmake` closure of the toolkit that holds
+the STEP reader/writer (`STEPControl_Reader` / `STEPControl_Writer`
+live in **TKDESTEP** in OCCT 8.0.1). That closure names 11
+further toolkits, and they split by what they serve:
 
 - **The shape path** — TKDESTEP, TKDE, TKXSBase (above): everything
   `STEPControl_Reader` compiles and links against.
@@ -97,41 +102,58 @@ toolkits, and they split by what they serve:
   TKDESTEP also ships OCCT's *XDE document* packages
   (STEPCAFControl, and the DE-plugin provider pair in DESTEP),
   which read STEP into an XCAF document (names, colours, assembly
-  structure). The façade imports **geometry**, not documents, so
-  those two packages are excluded — the same treatment GTests
-  already had — and their branch of the closure is not added.
-  Inside TKDESTEP the pruning is exact and verified by include
-  scan: package STEPCAFControl (whole), package DESTEP reduced to
-  `DESTEP_Parameters` (the one class the core path embeds —
-  `StepData_StepModel` holds it by value), and STEPConstruct's two
-  presentation classes (`Styles`, `RenderingProperties` — colour /
-  material conversion used only by the document packages). If a
-  future phase wants document import (names/colours), add the
-  branch toolkits and restore those packages the same way.
+  structure). That branch was pruned in the STEP phase (façade
+  imported geometry only) and **restored 2026-10-28 for STEP
+  surface colours** — the façade now also reads each imported
+  file through `STEPCAFControl_Reader` + `XCAFDoc_ColorTool` and
+  exposes per-face colours (`mc_shape_face_colors`), so the
+  branch toolkits the colour path actually needs are in: TKCDF,
+  TKLCAF, TKCAF, TKXCAF, and TKService pruned to its five data
+  packages (Aspect, Graphic3d, Image, Font, Media — pulled in by
+  `XCAFDoc_VisMaterial` / `STEPConstruct_RenderingProperties`;
+  excluded: Shaders viewer GLSL texts and the Xw/WNT/Cocoa/Wasm
+  platform window backends, which no shipped source references).
+  Inside the branch the pruning is exact and verified by include
+  scan: TKVCAF is NOT added (its sole package is TPrsStd, the AIS
+  presentation driver table — display glue nothing in the colour
+  path references), TKV3d/TKHLR are not added (AIS viewer /
+  hidden-line; the module-level closure over-approximates —
+  TKDESTEP's own EXTERNLIB names only TKCDF/TKLCAF/TKCAF/TKXCAF
+  beyond the shape path), package XCAFApp is excluded (its single
+  class registers an AIS presentation driver in its constructor;
+  the façade creates documents directly with
+  `new TDocStd_Document`), and package XCAFPrs is pruned to its
+  base file + the Style/Texture data classes (`AISObject` /
+  `Driver` / `DocumentExplorer` are viewer machinery). Inside
+  TKDESTEP the restoration is the mirror of the earlier prune:
+  STEPCAFControl ships whole, DESTEP ships whole (was reduced to
+  `DESTEP_Parameters`), and STEPConstruct's `Styles` +
+  `RenderingProperties` are restored (STEPCAFControl_Reader /
+  Writer use both).
 
 Per-package file selection follows OCCT's own package
 `FILES.cmake` lists, plus the package directories' inline include
 files (`.lxx` / `.pxx` / `.gxx`) that OCCT collects by glob — the
 same set OCCT's cmake build compiles. `GTests` directories (unit
 tests, need GoogleTest) are excluded. Totals (original 15
-toolkits + the STEP expansion's 3):
+toolkits + the STEP expansion's 3 + the XDE restoration's 5):
 
-- **3,947 `.cxx` + 1 `.cpp` + 1 `.c` = 3,949 compilable OCCT sources**
+- **4,270 `.cxx` + 1 `.cpp` + 1 `.c` = 4,272 compilable OCCT sources**
   (the `.cpp` is `BRepMesh/delabella.cpp`, the triangulator bundled
   inside OCCT's TKMesh; the `.c` is TKernel's
   `Resource_ConvertUnicode.c`)
-- **4,981 header files** in `OCCT/src` (`.hxx/.lxx/.pxx/.gxx/.h`)
+- **5,535 header files** in `OCCT/src` (`.hxx/.lxx/.pxx/.gxx/.h`)
 - **1 generated header**: `OCCT/generated/Standard_Version.hxx` —
   the only header OCCT generates (from `adm/templates/
   Standard_Version.hxx.in`); the copy shipped here is the exact
   file OCCT's cmake produced for 8.0.1.
-- `OCCT/` total: **8,933 files, ~84 MB**.
+- `OCCT/` total: **9,807 files, ~91 MB**.
 
-Excluded modules/toolkits, and why: ApplicationFramework and
-Visualization (except as the STEP document branch discussed
-above — not added), the rest of Data Exchange (IGES — TKDEIGES;
-glTF/OBJ/PLY/STL/VRML — TKDEGLTF, TKDEOBJ, TKDEPLY, TKDESTL,
-TKDEVRML; XCAF — TKXCAF; RWMesh — TKRWMesh), Draw, plus the
+Excluded modules/toolkits, and why: the ApplicationFramework /
+Visualization toolkits outside the XDE colour branch discussed
+above (TKVCAF, TKV3d, TKHLR and the rest), the rest of Data
+Exchange (IGES — TKDEIGES; glTF/OBJ/PLY/STL/VRML — TKDEGLTF,
+TKDEOBJ, TKDEPLY, TKDESTL, TKDEVRML; RWMesh — TKRWMesh), Draw, plus the
 ModelingAlgorithms toolkits nothing in the closure needs: TKHLR
 (drawing hidden-line removal — only reachable via the document
 branch), TKFeat (feature recognition helpers), TKExpress (schema
@@ -499,9 +521,10 @@ counts solids; it converts nothing itself:
   returns the reader's combined shape (a compound) and
   `*solidCount` reports how many `TopAbs_SOLID` sub-shapes it
   holds. The reader converts the file's units to millimetres.
-  **Geometry only**: names, colours and assembly structure are
-  XCAF-document data (see the pruning note in "Subset") and are
-  not imported.
+  The same call ALSO runs the XDE colour read described in the
+  next section and stashes per-census-face colours on the
+  handle. What the import still does NOT carry: product names
+  and assembly-document structure.
 - `mc_export_step(shape, path, err)` — `STEPControl_Writer` with
   `STEPControl_AsIs`, mm. Added as import's counterpart — and
   because a round trip through a file is the honest proof of the
@@ -559,6 +582,73 @@ world-space: the sketch lives on the XZ ground plane at the
 origin and extrudes 10 mm along its normal (today: −Y, so the
 prism occupies y ∈ [−10, 0]) — position expectations should be
 set accordingly until sketch-on-face lands.
+
+## STEP colours via XDE (added 2026-10-28)
+
+Sean asked for the colours from the STEP file to carry over.
+That is what the XDE document branch pruned in the STEP phase
+is for, so it was restored (see "Subset" for the exact set and
+prunes: +323 compilable sources, +874 files). One new façade
+query (library section 8):
+
+- `mc_shape_face_colors(shape, outRGB, outHasColor, err)` —
+  per-face surface colours in the CENSUS face index space.
+  `mc_import_step` now additionally reads the same file through
+  `STEPCAFControl_Reader` (colour mode on) into a
+  `TDocStd_Document` created directly (no application object,
+  no presentation drivers), and matches `XCAFDoc_ColorTool`
+  surface colours onto the imported shape's census faces. The
+  document's shapes are different instances from the imported
+  shape's, so the match is geometric: a census face first takes
+  the colour of a document face with matching area + centroid
+  that carries a face-level colour; otherwise it takes the
+  colour of the document solid containing its centroid
+  (`BRepClass3d_SolidClassifier`). Colour reading is
+  best-effort decoration — any failure leaves the handle
+  colourless and never fails the import. Cost: each import
+  parses the file twice.
+
+Proof (same harness; whole suite now **200 checks, ALL PASS** —
+the 190 of the earlier sections unchanged, plus 10 colour
+checks). The test driver authors an XDE document with raw OCCT
+(two disjoint boxes: A = 20×10×10 at the origin, B = 10×10×10
+at x = 40; solid A red, solid B green, and A's TOP face blue at
+face level), writes it with `STEPCAFControl_Writer`, imports
+through the façade, and reads colours back per census face.
+Measured result — **per-face mapping exact**, not just
+per-solid:
+
+```
+  face  0 centre (  0.0   5.0   5.0) has=1 rgb=(1.00 0.00 0.00)
+  face  1 centre ( 20.0   5.0   5.0) has=1 rgb=(1.00 0.00 0.00)
+  face  2 centre ( 10.0   0.0   5.0) has=1 rgb=(1.00 0.00 0.00)
+  face  3 centre ( 10.0  10.0   5.0) has=1 rgb=(1.00 0.00 0.00)
+  face  4 centre ( 10.0   5.0   0.0) has=1 rgb=(1.00 0.00 0.00)
+  face  5 centre ( 10.0   5.0  10.0) has=1 rgb=(0.00 0.00 1.00)
+  face  6 centre ( 40.0   5.0   5.0) has=1 rgb=(0.00 1.00 0.00)
+  face  7 centre ( 50.0   5.0   5.0) has=1 rgb=(0.00 1.00 0.00)
+  face  8 centre ( 45.0   0.0   5.0) has=1 rgb=(0.00 1.00 0.00)
+  face  9 centre ( 45.0  10.0   5.0) has=1 rgb=(0.00 1.00 0.00)
+  face 10 centre ( 45.0   5.0   0.0) has=1 rgb=(0.00 1.00 0.00)
+  face 11 centre ( 45.0   5.0  10.0) has=1 rgb=(0.00 1.00 0.00)
+  colour tally: red=5 blue=1 green=6 other=0
+```
+
+Census faces 0–4 (solid A) red, face 5 (A's top face, the one
+coloured at face level) blue, faces 6–11 (solid B) green, all
+has=1. A shape that never came from an import reports
+hasColor = 0 on every face.
+
+App behaviour built on this (DemoApp): the main view renders
+an imported body with its STEP colours (one element + material
+per census face, standard gray for faces without a colour;
+when NO face has a colour the node keeps the single plain
+material, unchanged), the import status line says so, and the
+FEM selection view uses the STEP colour as each face's base
+colour (fixed blue / loaded orange still override). Colours
+live on the import handle only: sketch add/subtract produces a
+new handle and the result renders plain — colours describe the
+file as imported, not the edited solid.
 
 ## FEM — mesh + basic stress analysis (added 2026-10-27)
 
@@ -675,6 +765,25 @@ volume drifts more than 5% from the solid's. Results re-colour
 the voxel surface by node von Mises (blue → red, legend with
 the maximum), with max von Mises, max displacement and solver
 iterations in large type; Reset returns to the plain body.
+
+Panel fixes (2026-10-28, from on-device use): (1) **Layout** —
+the first panel let the 3D view claim the full proposed height
+(`maxHeight .infinity` + `layoutPriority 1`), which laid the
+whole control stack below the screen edge: on the device only
+Fix/Unfix was reachable and the Load mode, force field, Mesh
+and Solve controls could not be reached at all. The panel is
+now pinned by a `GeometryReader` to its real height: the view
+takes a bounded 54% share and every control lives in a
+ScrollView that takes exactly the remaining height, in both
+orientations. (2) **Picking** — the selection scene is built
+once per body; a tap now recolours only the tapped face's
+`SCNMaterial` diffuse in place (the whole scene — hundreds of
+elements and materials — was rebuilt on every tap, which felt
+janky). Hit testing is unchanged (SceneKit returns hits
+nearest-first; the first hit's triangle ordinal maps through
+the tessellation ranges to the census face). (3) The selection
+view's per-face base colour is the face's STEP colour when the
+import carried one (see "STEP colours via XDE").
 Caption in the UI: "Basic linear stress analysis — voxel
 mesh."
 
@@ -683,8 +792,8 @@ mesh."
 `CascadePort.xcodeproj`, generated by `gen_project.py` in this
 repo (deterministic md5 UUIDs; regenerating is byte-identical).
 
-- **CascadeKit** (static library): sources = the 3,949 OCCT files +
-  `Facade/occt_facade.cpp`; headers phase = the 4,982 OCCT headers +
+- **CascadeKit** (static library): sources = the 4,272 OCCT files +
+  `Facade/occt_facade.cpp`; headers phase = the 5,536 OCCT headers +
   `OCCT/generated/Standard_Version.hxx` + `Facade/occt_facade.h`.
   Settings: C++17 (`gnu++17`), exceptions ON, RTTI ON, the defines
   above, header search paths as above, iOS 17, arm64,
@@ -697,11 +806,13 @@ repo (deterministic md5 UUIDs; regenerating is byte-identical).
   geometry logic: buttons → façade calls → SceneKit display
   (the sketch plate: entities described as Swift arrays →
   `mc_face_from_sketch` → `mc_prism_face` → render; **Import
-  STEP**: file picker → sandbox copy → `mc_import_step`, the
-  imported shape held as the app's current body; the MetalCAD
-  sketch editor's Finish & Extrude then offers Add
-  (`mc_unite`) / Subtract (`mc_subtract`) against that body
-  alongside the standalone extrude).
+  STEP**: in-app list of the .step files in the app's Files
+  folder (`Documents/Cascade/`, created and seeded at launch)
+  → `mc_import_step`, the imported shape held as the app's
+  current body and rendered in its STEP colours when the file
+  carries them; the MetalCAD sketch editor's Finish & Extrude
+  then offers Add (`mc_unite`) / Subtract (`mc_subtract`)
+  against that body alongside the standalone extrude).
 
 ## Where iOS/Xcode may differ from the Linux proof (honest list)
 
