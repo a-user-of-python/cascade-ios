@@ -4193,7 +4193,6 @@
 		A27C9E9B0B4EF923975F95EA /* Aspect_SkydomeBackground.cxx in kit-sources */ = {isa = PBXBuildFile; fileRef = 2F310A5007F0DDD0A618C986 /* Aspect_SkydomeBackground.cxx */; };
 		F09AC6E00EC20CFE1749CF41 /* Aspect_VKeySet.cxx in kit-sources */ = {isa = PBXBuildFile; fileRef = A7DF65F1777B32B5618E4849 /* Aspect_VKeySet.cxx */; };
 		847C86E0166F5BA18DD3D158 /* Aspect_Window.cxx in kit-sources */ = {isa = PBXBuildFile; fileRef = 80C2B06489ADE1B167C0C98F /* Aspect_Window.cxx */; };
-		DC870C27554A347BDB1ACADB /* Aspect_WindowInputListener.cxx in kit-sources */ = {isa = PBXBuildFile; fileRef = 5C00CB0EA625D88A4928B9B4 /* Aspect_WindowInputListener.cxx */; };
 		B3F81D2A63ACD046D89FA042 /* Aspect_XRSession.cxx in kit-sources */ = {isa = PBXBuildFile; fileRef = 5433349B04B39CE616E33919 /* Aspect_XRSession.cxx */; };
 		50D93BCF559E2399D41828CD /* Font_FTFont.cxx in kit-sources */ = {isa = PBXBuildFile; fileRef = DD184515224EE34A91BD000A /* Font_FTFont.cxx */; };
 		572D2F8F5F5B438B37E02C51 /* Font_FTLibrary.cxx in kit-sources */ = {isa = PBXBuildFile; fileRef = 3B498B90E9D62E32D80B8BAD /* Font_FTLibrary.cxx */; };
@@ -9816,6 +9815,33 @@
 		63D2C021DDD4591FFA83C50B /* Media_PlayerContext.hxx in kit-headers */ = {isa = PBXBuildFile; fileRef = 2B95995D9B6D09BD1FA9A4A1 /* Media_PlayerContext.hxx */; settings = {ATTRIBUTES = (Project); }; };
 		8CE0D08BDD59F43C73C7DAD1 /* Media_Scaler.hxx in kit-headers */ = {isa = PBXBuildFile; fileRef = C8FABEC083FD4A6178A8D699 /* Media_Scaler.hxx */; settings = {ATTRIBUTES = (Project); }; };
 		B9461D32F86616E596A5A3EC /* Media_Timer.hxx in kit-headers */ = {isa = PBXBuildFile; fileRef = 0837DC28B8412049A87B0524 /* Media_Timer.hxx */; settings = {ATTRIBUTES = (Project); }; };
+		04301C25F1BAA3728767EA2A /* Shaders_DeclarationsImpl_glsl.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = 7890056664F1E3A7D08DF46C /* Shaders_DeclarationsImpl_glsl.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		E587CE4497BD49C0C5270936 /* Shaders_Declarations_glsl.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = A4D50F3293D378E71D8412C7 /* Shaders_Declarations_glsl.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		8949114686691BB998A6379C /* Shaders_Display_fs.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = D436BA542FFC5F3EA21F893A /* Shaders_Display_fs.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		8BDABD86C28466A413B340D7 /* Shaders_LightShadow_glsl.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = 2E23959F45CC71D99BA0DF39 /* Shaders_LightShadow_glsl.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		B45F91C340EC0137537AAD77 /* Shaders_PBRCookTorrance_glsl.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = 532B7C578A0CA82A781A98A0 /* Shaders_PBRCookTorrance_glsl.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		F093A0B110B28DC1B4F5EE03 /* Shaders_PBRDirectionalLight_glsl.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = F53526E5EE8ED57451EA6553 /* Shaders_PBRDirectionalLight_glsl.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		7D232ECC8B9CF9B2F1B9BB59 /* Shaders_PBRDistribution_glsl.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = DEE5F11A61EBBC0D5D1844EA /* Shaders_PBRDistribution_glsl.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		7CDE31E58D86F1F4935DB1B3 /* Shaders_PBREnvBaking_fs.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = 6B9E5911739FDFB5453DADA0 /* Shaders_PBREnvBaking_fs.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		6D969FA93A41522B2C05C2CA /* Shaders_PBREnvBaking_vs.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = D001BC963C29BE061AC99D52 /* Shaders_PBREnvBaking_vs.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		48CFB0F110748A6C0F3B2F07 /* Shaders_PBRFresnel_glsl.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = B7D3649B0BD6276C3386E46D /* Shaders_PBRFresnel_glsl.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		8DDDEBBE5477E580DF1C9C81 /* Shaders_PBRGeometry_glsl.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = C82C55B832E92886B94CEA97 /* Shaders_PBRGeometry_glsl.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		37F667914DB329476C14AF6A /* Shaders_PBRIllumination_glsl.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = D75DAC24D4B19C6940091D6F /* Shaders_PBRIllumination_glsl.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		2844A71D9BEF4ED793D499E6 /* Shaders_PBRPointLight_glsl.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = 92DC7DE1DFDADF3842D71BF2 /* Shaders_PBRPointLight_glsl.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		10BEF46678BDAE4C7236CE6F /* Shaders_PBRSpotLight_glsl.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = 5442B3435BEA4286BB31692C /* Shaders_PBRSpotLight_glsl.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		3C834ACE84B81F466EA47E18 /* Shaders_PathtraceBase_fs.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = 2349FC180254CADB097159CF /* Shaders_PathtraceBase_fs.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		A656922268E573AC7561EEDA /* Shaders_PhongDirectionalLight_glsl.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = 2BF559368563F8059F524B29 /* Shaders_PhongDirectionalLight_glsl.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		1B04AB4D285DCA559E0473A6 /* Shaders_PhongPointLight_glsl.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = 75210F0D57884BEAD380AE18 /* Shaders_PhongPointLight_glsl.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		80AF4752B3D5B93F35AB865F /* Shaders_PhongShading_fs.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = 80F2A9AAD5ABD04F75B50765 /* Shaders_PhongShading_fs.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		5265DFBC3CA75A7427BFDB63 /* Shaders_PhongShading_vs.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = 5BA6CE4A3AE77356152108EA /* Shaders_PhongShading_vs.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		FA1C6AFEB5AFEF974E012263 /* Shaders_PhongSpotLight_glsl.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = C3F2CEA394A19D885FB2C95D /* Shaders_PhongSpotLight_glsl.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		809947F71ADD0DF927A06BF0 /* Shaders_PointLightAttenuation_glsl.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = 7BF7AB20CD229A897B439612 /* Shaders_PointLightAttenuation_glsl.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		63A0EF62B7B9BFA08D9EA6D0 /* Shaders_RaytraceBase_fs.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = C9D939D99E7BDDA863101DFA /* Shaders_RaytraceBase_fs.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		346D39153C0F27932E0AE81C /* Shaders_RaytraceBase_vs.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = 939B96FCEC8E91A16E92B12E /* Shaders_RaytraceBase_vs.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		A722EEB030FB4D5D42C4F557 /* Shaders_RaytraceRender_fs.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = BAEF5AF54BF689EE0F65D0EA /* Shaders_RaytraceRender_fs.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		B948397079FFD92F756FE05C /* Shaders_RaytraceSmooth_fs.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = F316666961DF3609F5D8B029 /* Shaders_RaytraceSmooth_fs.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		79C7FC95FFB2206C7832CB0F /* Shaders_SkydomBackground_fs.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = A979C9A809993C9AE949D7F9 /* Shaders_SkydomBackground_fs.pxx */; settings = {ATTRIBUTES = (Project); }; };
+		587C9F40E682B2217B144613 /* Shaders_TangentSpaceNormal_glsl.pxx in kit-headers */ = {isa = PBXBuildFile; fileRef = C428FC9BDF9AF19187C279B4 /* Shaders_TangentSpaceNormal_glsl.pxx */; settings = {ATTRIBUTES = (Project); }; };
 		5AC788F41434CC87B6A6975C /* occt_facade.h in kit-headers */ = {isa = PBXBuildFile; fileRef = A784B626DB72E0EF948A2774 /* occt_facade.h */; settings = {ATTRIBUTES = (Project); }; };
 		68EEEDC2100A82F68C1FBB8A /* CascadeDemoApp.swift in app-sources */ = {isa = PBXBuildFile; fileRef = BB2E78464CF460E50E1DAFB1 /* CascadeDemoApp.swift */; };
 		59AADCC132045446695020D3 /* CascadeEngine.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 9FE4E8E59AC01F3D3B03E76A /* CascadeEngine.swift */; };
@@ -14034,7 +14060,6 @@
 		2F310A5007F0DDD0A618C986 /* Aspect_SkydomeBackground.cxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Aspect_SkydomeBackground.cxx; path = OCCT/src/Visualization/TKService/Aspect/Aspect_SkydomeBackground.cxx; sourceTree = SOURCE_ROOT; };
 		A7DF65F1777B32B5618E4849 /* Aspect_VKeySet.cxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Aspect_VKeySet.cxx; path = OCCT/src/Visualization/TKService/Aspect/Aspect_VKeySet.cxx; sourceTree = SOURCE_ROOT; };
 		80C2B06489ADE1B167C0C98F /* Aspect_Window.cxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Aspect_Window.cxx; path = OCCT/src/Visualization/TKService/Aspect/Aspect_Window.cxx; sourceTree = SOURCE_ROOT; };
-		5C00CB0EA625D88A4928B9B4 /* Aspect_WindowInputListener.cxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Aspect_WindowInputListener.cxx; path = OCCT/src/Visualization/TKService/Aspect/Aspect_WindowInputListener.cxx; sourceTree = SOURCE_ROOT; };
 		5433349B04B39CE616E33919 /* Aspect_XRSession.cxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Aspect_XRSession.cxx; path = OCCT/src/Visualization/TKService/Aspect/Aspect_XRSession.cxx; sourceTree = SOURCE_ROOT; };
 		DD184515224EE34A91BD000A /* Font_FTFont.cxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Font_FTFont.cxx; path = OCCT/src/Visualization/TKService/Font/Font_FTFont.cxx; sourceTree = SOURCE_ROOT; };
 		3B498B90E9D62E32D80B8BAD /* Font_FTLibrary.cxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Font_FTLibrary.cxx; path = OCCT/src/Visualization/TKService/Font/Font_FTLibrary.cxx; sourceTree = SOURCE_ROOT; };
@@ -19656,6 +19681,33 @@
 		2B95995D9B6D09BD1FA9A4A1 /* Media_PlayerContext.hxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Media_PlayerContext.hxx; path = OCCT/src/Visualization/TKService/Media/Media_PlayerContext.hxx; sourceTree = SOURCE_ROOT; };
 		C8FABEC083FD4A6178A8D699 /* Media_Scaler.hxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Media_Scaler.hxx; path = OCCT/src/Visualization/TKService/Media/Media_Scaler.hxx; sourceTree = SOURCE_ROOT; };
 		0837DC28B8412049A87B0524 /* Media_Timer.hxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Media_Timer.hxx; path = OCCT/src/Visualization/TKService/Media/Media_Timer.hxx; sourceTree = SOURCE_ROOT; };
+		7890056664F1E3A7D08DF46C /* Shaders_DeclarationsImpl_glsl.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_DeclarationsImpl_glsl.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_DeclarationsImpl_glsl.pxx; sourceTree = SOURCE_ROOT; };
+		A4D50F3293D378E71D8412C7 /* Shaders_Declarations_glsl.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_Declarations_glsl.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_Declarations_glsl.pxx; sourceTree = SOURCE_ROOT; };
+		D436BA542FFC5F3EA21F893A /* Shaders_Display_fs.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_Display_fs.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_Display_fs.pxx; sourceTree = SOURCE_ROOT; };
+		2E23959F45CC71D99BA0DF39 /* Shaders_LightShadow_glsl.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_LightShadow_glsl.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_LightShadow_glsl.pxx; sourceTree = SOURCE_ROOT; };
+		532B7C578A0CA82A781A98A0 /* Shaders_PBRCookTorrance_glsl.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_PBRCookTorrance_glsl.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_PBRCookTorrance_glsl.pxx; sourceTree = SOURCE_ROOT; };
+		F53526E5EE8ED57451EA6553 /* Shaders_PBRDirectionalLight_glsl.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_PBRDirectionalLight_glsl.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_PBRDirectionalLight_glsl.pxx; sourceTree = SOURCE_ROOT; };
+		DEE5F11A61EBBC0D5D1844EA /* Shaders_PBRDistribution_glsl.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_PBRDistribution_glsl.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_PBRDistribution_glsl.pxx; sourceTree = SOURCE_ROOT; };
+		6B9E5911739FDFB5453DADA0 /* Shaders_PBREnvBaking_fs.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_PBREnvBaking_fs.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_PBREnvBaking_fs.pxx; sourceTree = SOURCE_ROOT; };
+		D001BC963C29BE061AC99D52 /* Shaders_PBREnvBaking_vs.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_PBREnvBaking_vs.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_PBREnvBaking_vs.pxx; sourceTree = SOURCE_ROOT; };
+		B7D3649B0BD6276C3386E46D /* Shaders_PBRFresnel_glsl.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_PBRFresnel_glsl.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_PBRFresnel_glsl.pxx; sourceTree = SOURCE_ROOT; };
+		C82C55B832E92886B94CEA97 /* Shaders_PBRGeometry_glsl.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_PBRGeometry_glsl.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_PBRGeometry_glsl.pxx; sourceTree = SOURCE_ROOT; };
+		D75DAC24D4B19C6940091D6F /* Shaders_PBRIllumination_glsl.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_PBRIllumination_glsl.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_PBRIllumination_glsl.pxx; sourceTree = SOURCE_ROOT; };
+		92DC7DE1DFDADF3842D71BF2 /* Shaders_PBRPointLight_glsl.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_PBRPointLight_glsl.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_PBRPointLight_glsl.pxx; sourceTree = SOURCE_ROOT; };
+		5442B3435BEA4286BB31692C /* Shaders_PBRSpotLight_glsl.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_PBRSpotLight_glsl.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_PBRSpotLight_glsl.pxx; sourceTree = SOURCE_ROOT; };
+		2349FC180254CADB097159CF /* Shaders_PathtraceBase_fs.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_PathtraceBase_fs.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_PathtraceBase_fs.pxx; sourceTree = SOURCE_ROOT; };
+		2BF559368563F8059F524B29 /* Shaders_PhongDirectionalLight_glsl.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_PhongDirectionalLight_glsl.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_PhongDirectionalLight_glsl.pxx; sourceTree = SOURCE_ROOT; };
+		75210F0D57884BEAD380AE18 /* Shaders_PhongPointLight_glsl.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_PhongPointLight_glsl.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_PhongPointLight_glsl.pxx; sourceTree = SOURCE_ROOT; };
+		80F2A9AAD5ABD04F75B50765 /* Shaders_PhongShading_fs.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_PhongShading_fs.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_PhongShading_fs.pxx; sourceTree = SOURCE_ROOT; };
+		5BA6CE4A3AE77356152108EA /* Shaders_PhongShading_vs.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_PhongShading_vs.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_PhongShading_vs.pxx; sourceTree = SOURCE_ROOT; };
+		C3F2CEA394A19D885FB2C95D /* Shaders_PhongSpotLight_glsl.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_PhongSpotLight_glsl.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_PhongSpotLight_glsl.pxx; sourceTree = SOURCE_ROOT; };
+		7BF7AB20CD229A897B439612 /* Shaders_PointLightAttenuation_glsl.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_PointLightAttenuation_glsl.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_PointLightAttenuation_glsl.pxx; sourceTree = SOURCE_ROOT; };
+		C9D939D99E7BDDA863101DFA /* Shaders_RaytraceBase_fs.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_RaytraceBase_fs.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_RaytraceBase_fs.pxx; sourceTree = SOURCE_ROOT; };
+		939B96FCEC8E91A16E92B12E /* Shaders_RaytraceBase_vs.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_RaytraceBase_vs.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_RaytraceBase_vs.pxx; sourceTree = SOURCE_ROOT; };
+		BAEF5AF54BF689EE0F65D0EA /* Shaders_RaytraceRender_fs.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_RaytraceRender_fs.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_RaytraceRender_fs.pxx; sourceTree = SOURCE_ROOT; };
+		F316666961DF3609F5D8B029 /* Shaders_RaytraceSmooth_fs.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_RaytraceSmooth_fs.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_RaytraceSmooth_fs.pxx; sourceTree = SOURCE_ROOT; };
+		A979C9A809993C9AE949D7F9 /* Shaders_SkydomBackground_fs.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_SkydomBackground_fs.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_SkydomBackground_fs.pxx; sourceTree = SOURCE_ROOT; };
+		C428FC9BDF9AF19187C279B4 /* Shaders_TangentSpaceNormal_glsl.pxx */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; name = Shaders_TangentSpaceNormal_glsl.pxx; path = OCCT/src/Visualization/TKService/Shaders/Shaders_TangentSpaceNormal_glsl.pxx; sourceTree = SOURCE_ROOT; };
 		026568AFD0EA6BC08988906A /* occt_facade.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = occt_facade.cpp; path = Facade/occt_facade.cpp; sourceTree = SOURCE_ROOT; };
 		A784B626DB72E0EF948A2774 /* occt_facade.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = occt_facade.h; path = Facade/occt_facade.h; sourceTree = SOURCE_ROOT; };
 		BB2E78464CF460E50E1DAFB1 /* CascadeDemoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CascadeDemoApp.swift; path = DemoApp/CascadeDemoApp.swift; sourceTree = SOURCE_ROOT; };
@@ -25240,6 +25292,33 @@
 				63D2C021DDD4591FFA83C50B /* Media_PlayerContext.hxx in kit-headers */,
 				8CE0D08BDD59F43C73C7DAD1 /* Media_Scaler.hxx in kit-headers */,
 				B9461D32F86616E596A5A3EC /* Media_Timer.hxx in kit-headers */,
+				04301C25F1BAA3728767EA2A /* Shaders_DeclarationsImpl_glsl.pxx in kit-headers */,
+				E587CE4497BD49C0C5270936 /* Shaders_Declarations_glsl.pxx in kit-headers */,
+				8949114686691BB998A6379C /* Shaders_Display_fs.pxx in kit-headers */,
+				8BDABD86C28466A413B340D7 /* Shaders_LightShadow_glsl.pxx in kit-headers */,
+				B45F91C340EC0137537AAD77 /* Shaders_PBRCookTorrance_glsl.pxx in kit-headers */,
+				F093A0B110B28DC1B4F5EE03 /* Shaders_PBRDirectionalLight_glsl.pxx in kit-headers */,
+				7D232ECC8B9CF9B2F1B9BB59 /* Shaders_PBRDistribution_glsl.pxx in kit-headers */,
+				7CDE31E58D86F1F4935DB1B3 /* Shaders_PBREnvBaking_fs.pxx in kit-headers */,
+				6D969FA93A41522B2C05C2CA /* Shaders_PBREnvBaking_vs.pxx in kit-headers */,
+				48CFB0F110748A6C0F3B2F07 /* Shaders_PBRFresnel_glsl.pxx in kit-headers */,
+				8DDDEBBE5477E580DF1C9C81 /* Shaders_PBRGeometry_glsl.pxx in kit-headers */,
+				37F667914DB329476C14AF6A /* Shaders_PBRIllumination_glsl.pxx in kit-headers */,
+				2844A71D9BEF4ED793D499E6 /* Shaders_PBRPointLight_glsl.pxx in kit-headers */,
+				10BEF46678BDAE4C7236CE6F /* Shaders_PBRSpotLight_glsl.pxx in kit-headers */,
+				3C834ACE84B81F466EA47E18 /* Shaders_PathtraceBase_fs.pxx in kit-headers */,
+				A656922268E573AC7561EEDA /* Shaders_PhongDirectionalLight_glsl.pxx in kit-headers */,
+				1B04AB4D285DCA559E0473A6 /* Shaders_PhongPointLight_glsl.pxx in kit-headers */,
+				80AF4752B3D5B93F35AB865F /* Shaders_PhongShading_fs.pxx in kit-headers */,
+				5265DFBC3CA75A7427BFDB63 /* Shaders_PhongShading_vs.pxx in kit-headers */,
+				FA1C6AFEB5AFEF974E012263 /* Shaders_PhongSpotLight_glsl.pxx in kit-headers */,
+				809947F71ADD0DF927A06BF0 /* Shaders_PointLightAttenuation_glsl.pxx in kit-headers */,
+				63A0EF62B7B9BFA08D9EA6D0 /* Shaders_RaytraceBase_fs.pxx in kit-headers */,
+				346D39153C0F27932E0AE81C /* Shaders_RaytraceBase_vs.pxx in kit-headers */,
+				A722EEB030FB4D5D42C4F557 /* Shaders_RaytraceRender_fs.pxx in kit-headers */,
+				B948397079FFD92F756FE05C /* Shaders_RaytraceSmooth_fs.pxx in kit-headers */,
+				79C7FC95FFB2206C7832CB0F /* Shaders_SkydomBackground_fs.pxx in kit-headers */,
+				587C9F40E682B2217B144613 /* Shaders_TangentSpaceNormal_glsl.pxx in kit-headers */,
 				5AC788F41434CC87B6A6975C /* occt_facade.h in kit-headers */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -29448,7 +29527,6 @@
 				A27C9E9B0B4EF923975F95EA /* Aspect_SkydomeBackground.cxx in Sources */,
 				F09AC6E00EC20CFE1749CF41 /* Aspect_VKeySet.cxx in Sources */,
 				847C86E0166F5BA18DD3D158 /* Aspect_Window.cxx in Sources */,
-				DC870C27554A347BDB1ACADB /* Aspect_WindowInputListener.cxx in Sources */,
 				B3F81D2A63ACD046D89FA042 /* Aspect_XRSession.cxx in Sources */,
 				50D93BCF559E2399D41828CD /* Font_FTFont.cxx in Sources */,
 				572D2F8F5F5B438B37E02C51 /* Font_FTLibrary.cxx in Sources */,
@@ -33753,7 +33831,6 @@
 				2F310A5007F0DDD0A618C986 /* Aspect_SkydomeBackground.cxx */,
 				A7DF65F1777B32B5618E4849 /* Aspect_VKeySet.cxx */,
 				80C2B06489ADE1B167C0C98F /* Aspect_Window.cxx */,
-				5C00CB0EA625D88A4928B9B4 /* Aspect_WindowInputListener.cxx */,
 				5433349B04B39CE616E33919 /* Aspect_XRSession.cxx */,
 				DD184515224EE34A91BD000A /* Font_FTFont.cxx */,
 				3B498B90E9D62E32D80B8BAD /* Font_FTLibrary.cxx */,
@@ -39375,6 +39452,33 @@
 				2B95995D9B6D09BD1FA9A4A1 /* Media_PlayerContext.hxx */,
 				C8FABEC083FD4A6178A8D699 /* Media_Scaler.hxx */,
 				0837DC28B8412049A87B0524 /* Media_Timer.hxx */,
+				7890056664F1E3A7D08DF46C /* Shaders_DeclarationsImpl_glsl.pxx */,
+				A4D50F3293D378E71D8412C7 /* Shaders_Declarations_glsl.pxx */,
+				D436BA542FFC5F3EA21F893A /* Shaders_Display_fs.pxx */,
+				2E23959F45CC71D99BA0DF39 /* Shaders_LightShadow_glsl.pxx */,
+				532B7C578A0CA82A781A98A0 /* Shaders_PBRCookTorrance_glsl.pxx */,
+				F53526E5EE8ED57451EA6553 /* Shaders_PBRDirectionalLight_glsl.pxx */,
+				DEE5F11A61EBBC0D5D1844EA /* Shaders_PBRDistribution_glsl.pxx */,
+				6B9E5911739FDFB5453DADA0 /* Shaders_PBREnvBaking_fs.pxx */,
+				D001BC963C29BE061AC99D52 /* Shaders_PBREnvBaking_vs.pxx */,
+				B7D3649B0BD6276C3386E46D /* Shaders_PBRFresnel_glsl.pxx */,
+				C82C55B832E92886B94CEA97 /* Shaders_PBRGeometry_glsl.pxx */,
+				D75DAC24D4B19C6940091D6F /* Shaders_PBRIllumination_glsl.pxx */,
+				92DC7DE1DFDADF3842D71BF2 /* Shaders_PBRPointLight_glsl.pxx */,
+				5442B3435BEA4286BB31692C /* Shaders_PBRSpotLight_glsl.pxx */,
+				2349FC180254CADB097159CF /* Shaders_PathtraceBase_fs.pxx */,
+				2BF559368563F8059F524B29 /* Shaders_PhongDirectionalLight_glsl.pxx */,
+				75210F0D57884BEAD380AE18 /* Shaders_PhongPointLight_glsl.pxx */,
+				80F2A9AAD5ABD04F75B50765 /* Shaders_PhongShading_fs.pxx */,
+				5BA6CE4A3AE77356152108EA /* Shaders_PhongShading_vs.pxx */,
+				C3F2CEA394A19D885FB2C95D /* Shaders_PhongSpotLight_glsl.pxx */,
+				7BF7AB20CD229A897B439612 /* Shaders_PointLightAttenuation_glsl.pxx */,
+				C9D939D99E7BDDA863101DFA /* Shaders_RaytraceBase_fs.pxx */,
+				939B96FCEC8E91A16E92B12E /* Shaders_RaytraceBase_vs.pxx */,
+				BAEF5AF54BF689EE0F65D0EA /* Shaders_RaytraceRender_fs.pxx */,
+				F316666961DF3609F5D8B029 /* Shaders_RaytraceSmooth_fs.pxx */,
+				A979C9A809993C9AE949D7F9 /* Shaders_SkydomBackground_fs.pxx */,
+				C428FC9BDF9AF19187C279B4 /* Shaders_TangentSpaceNormal_glsl.pxx */,
 			);
 			name = OCCT;
 			sourceTree = "<group>";
@@ -39825,6 +39929,7 @@
 					"$(SRCROOT)/OCCT/src/Visualization/TKService/Graphic3d",
 					"$(SRCROOT)/OCCT/src/Visualization/TKService/Image",
 					"$(SRCROOT)/OCCT/src/Visualization/TKService/Media",
+					"$(SRCROOT)/OCCT/src/Visualization/TKService/Shaders",
 				);
 				PRODUCT_NAME = CascadeKit;
 				SKIP_INSTALL = YES;
@@ -40106,6 +40211,7 @@
 					"$(SRCROOT)/OCCT/src/Visualization/TKService/Graphic3d",
 					"$(SRCROOT)/OCCT/src/Visualization/TKService/Image",
 					"$(SRCROOT)/OCCT/src/Visualization/TKService/Media",
+					"$(SRCROOT)/OCCT/src/Visualization/TKService/Shaders",
 				);
 				PRODUCT_NAME = CascadeKit;
 				SKIP_INSTALL = YES;
