@@ -27,6 +27,7 @@ struct ContentView: View {
     /// The current body (set by STEP import; edited by sketches).
     @StateObject private var currentBody = CurrentBody()
     @State private var showImporter = false
+    @State private var showFEM = false
     /// A finished sketch waiting for its apply-mode choice (only
     /// used when a current body exists).
     @State private var pendingSketch: Sketch?
@@ -94,6 +95,13 @@ struct ContentView: View {
                         Label("Sketch (MetalCAD editor)", systemImage: "pencil.and.ruler")
                     }
                     .buttonStyle(.borderedProminent)
+                    Button {
+                        showFEM = true
+                    } label: {
+                        Label("FEM", systemImage: "function")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!currentBody.exists)
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
@@ -108,6 +116,9 @@ struct ContentView: View {
         .padding(16)
         .fullScreenCover(isPresented: $showSketchEditor, onDismiss: sketchEditorDismissed) {
             SketchEditorView(model: sketchModel, sketchID: EditorModel.hostedSketchID)
+        }
+        .fullScreenCover(isPresented: $showFEM) {
+            FemPanelView(currentBody: currentBody)
         }
         .fileImporter(isPresented: $showImporter,
                       allowedContentTypes: [.data],

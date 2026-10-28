@@ -8943,6 +8943,7 @@
 		68EEEDC2100A82F68C1FBB8A /* CascadeDemoApp.swift in app-sources */ = {isa = PBXBuildFile; fileRef = BB2E78464CF460E50E1DAFB1 /* CascadeDemoApp.swift */; };
 		59AADCC132045446695020D3 /* CascadeEngine.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 9FE4E8E59AC01F3D3B03E76A /* CascadeEngine.swift */; };
 		0511C63B43980D25DBD1B2FF /* ContentView.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 21F241C0660DC6D973EE3ACF /* ContentView.swift */; };
+		484EC1964B1A74A02CAC592A /* FEM.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 4862DCEC106221863CBD9B0C /* FEM.swift */; };
 		698C4E2E9E695F0D90C734FE /* Math.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 31410CCD3C111A1244036EBC /* Math.swift */; };
 		63B109E882FA85A21A4FA1EF /* Sketch.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 57FF298053A365D6C29A0CA5 /* Sketch.swift */; };
 		0477944B788152049857D661 /* Solver.swift in app-sources */ = {isa = PBXBuildFile; fileRef = 65AC8C0736C2746E8D2C2A9A /* Solver.swift */; };
@@ -17906,6 +17907,7 @@
 		BB2E78464CF460E50E1DAFB1 /* CascadeDemoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CascadeDemoApp.swift; path = DemoApp/CascadeDemoApp.swift; sourceTree = SOURCE_ROOT; };
 		9FE4E8E59AC01F3D3B03E76A /* CascadeEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CascadeEngine.swift; path = DemoApp/CascadeEngine.swift; sourceTree = SOURCE_ROOT; };
 		21F241C0660DC6D973EE3ACF /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ContentView.swift; path = DemoApp/ContentView.swift; sourceTree = SOURCE_ROOT; };
+		4862DCEC106221863CBD9B0C /* FEM.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FEM.swift; path = DemoApp/FEM.swift; sourceTree = SOURCE_ROOT; };
 		31410CCD3C111A1244036EBC /* Math.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Math.swift; path = DemoApp/Math.swift; sourceTree = SOURCE_ROOT; };
 		57FF298053A365D6C29A0CA5 /* Sketch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Sketch.swift; path = DemoApp/Sketch.swift; sourceTree = SOURCE_ROOT; };
 		65AC8C0736C2746E8D2C2A9A /* Solver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Solver.swift; path = DemoApp/Solver.swift; sourceTree = SOURCE_ROOT; };
@@ -26912,6 +26914,7 @@
 				68EEEDC2100A82F68C1FBB8A /* CascadeDemoApp.swift in Sources */,
 				59AADCC132045446695020D3 /* CascadeEngine.swift in Sources */,
 				0511C63B43980D25DBD1B2FF /* ContentView.swift in Sources */,
+				484EC1964B1A74A02CAC592A /* FEM.swift in Sources */,
 				698C4E2E9E695F0D90C734FE /* Math.swift in Sources */,
 				63B109E882FA85A21A4FA1EF /* Sketch.swift in Sources */,
 				0477944B788152049857D661 /* Solver.swift in Sources */,
@@ -35892,6 +35895,7 @@
 				BB2E78464CF460E50E1DAFB1 /* CascadeDemoApp.swift */,
 				9FE4E8E59AC01F3D3B03E76A /* CascadeEngine.swift */,
 				21F241C0660DC6D973EE3ACF /* ContentView.swift */,
+				4862DCEC106221863CBD9B0C /* FEM.swift */,
 				31410CCD3C111A1244036EBC /* Math.swift */,
 				57FF298053A365D6C29A0CA5 /* Sketch.swift */,
 				65AC8C0736C2746E8D2C2A9A /* Solver.swift */,

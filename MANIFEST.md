@@ -32,17 +32,20 @@ façade wraps it rather than approximating it — e.g. fillets are
 **Library form (2026-10-27).** The façade is now presented as
 what it is: the public C API of the **CascadeKit** geometry
 library (the static-library target the apps link). The public
-header `Facade/occt_facade.h` is organised in ten documented
+header `Facade/occt_facade.h` is organised in eleven documented
 sections — 1 handles/errors/lifecycle, 2 primitives, 3 profiles,
 4 sketches, 5 booleans, 6 finishing, 7 queries, 8 selection
-census, 9 tessellation, 10 import/export — with the library's
-conventions (units, error model, ownership, shared index spaces)
-stated at the top. No existing signature changed. Section 10 is
-new (see "STEP import" below): `mc_import_step` /
-`mc_export_step`, and the app uses it — an imported STEP file
-becomes the app's *current body*, and the sketch editor's
-Finish & Extrude can then unite the extrusion into the body or
-cut it out (the booleans of section 5, applied by the app).
+census, 9 tessellation, 10 import/export, 11 FEM — with the
+library's conventions (units, error model, ownership, shared
+index spaces) stated at the top. No existing signature changed
+through section 10. Section 10 (see "STEP import" below) added
+`mc_import_step` / `mc_export_step`, and the app uses it — an
+imported STEP file becomes the app's *current body*, and the
+sketch editor's Finish & Extrude can then unite the extrusion
+into the body or cut it out (the booleans of section 5, applied
+by the app). Section 11 (see "FEM" below) is the one section
+that is NOT a pass-through: the project's own voxel mesher and
+linear-static solver, standing on OCCT geometry queries.
 
 ## OCCT version
 
@@ -556,6 +559,124 @@ world-space: the sketch lives on the XZ ground plane at the
 origin and extrudes 10 mm along its normal (today: −Y, so the
 prism occupies y ∈ [−10, 0]) — position expectations should be
 set accordingly until sketch-on-face lands.
+
+## FEM — mesh + basic stress analysis (added 2026-10-27)
+
+Library section 11 (`mc_fem_*`, in `Facade/occt_facade.h` /
+`.cpp`) is Sean's FEM commission: pick faces to fix, apply a
+force, see von Mises stress. It is the project's **own**
+numerical code — the architecture principle above applies to
+sections 1–10; here OCCT supplies only the geometry queries
+(`BRepClass3d_SolidClassifier` for inside tests,
+`BRepExtrema_DistShapeShape` for point-to-face distance, the
+census for face indices). Nothing under `OCCT/` changed; no new
+OCCT toolkit was needed.
+
+Method, as implemented:
+
+- **Voxel mesh** (`mc_fem_mesh`): uniform grid over the shape's
+  optimal bounding box; a cell is kept when its CENTRE classifies
+  inside a solid of the shape. Kept cells are hex8 elements on a
+  shared structured node grid. Element cap 250,000
+  (`MC_FEM_MAX_ELEMENTS`); the classification scan itself is
+  capped at 8,000,000 cells so an absurd voxel size fails fast.
+  The mesh also exposes its boundary quads, each associated with
+  the census face nearest its centre (or −1), and its realised
+  volume (elements × h³) so callers can warn on drift against
+  the solid's true volume.
+- **Face mapping** (`mc_fem_nodes_on_face`): surface nodes
+  whose point-to-face distance is below 0.75 × voxel size
+  (cached per face). Fixity and loads are expressed through
+  these sets; a face's total load spreads evenly over its
+  mapped nodes.
+- **Solve** (`mc_fem_solve`): hex8 trilinear stiffness, full
+  2×2×2 Gauss integration — every element is the same cube, so
+  one stiffness matrix serves the mesh (exact, not an
+  approximation). Full assembly into compressed sparse row form
+  (3×3 nodal blocks) over the free nodes; preconditioned
+  conjugate gradients with a Jacobi preconditioner, relative
+  tolerance 1e-8, iteration cap 10,000. **Convergence is gated
+  on the recomputed residual** r = b − Ax (the recursive CG
+  residual can drift, and on a singular-but-almost-consistent
+  system it can fake convergence — found and fixed during this
+  phase's proof: a one-node-clamped solve previously "passed";
+  it now fails cleanly). No fixity, non-positive diagonal, or a
+  CG breakdown returns `MC_ERR_FEM_SINGULAR`; exhausting the
+  cap returns `MC_ERR_FEM_NO_CONVERGE`. Results: per-node
+  displacements, per-element centroid von Mises, node-averaged
+  von Mises, max von Mises (element centroid), max displacement,
+  iterations, final true relative residual.
+
+Proof (same host harness; whole suite now **190 checks, ALL
+PASS** — the 127 of the earlier sections unchanged, plus 63 FEM
+checks). The gate is the cantilever against beam theory at two
+resolutions. Beam 100×10×10 mm, steel E = 200 000 MPa, ν = 0.3,
+wall face clamped, 1000 N down on the end face. Analytic:
+I = 833.33 mm⁴, δ = PL³/3EI = **2.000 mm**, σ_wall = Mc/I =
+**600 MPa**.
+
+| Case | FEM | Analytic | Error |
+| --- | --- | --- | --- |
+| δ tip, h = 2.5 (640 elem, 25 nodes/face) | 1.9355 mm | 2.000 | −3.2% |
+| δ tip, h = 1.25 (5120 elem, 81 nodes/face) | 1.9882 mm | 2.000 | −0.6% |
+| σ max, h = 2.5 | 415.78 MPa | 600 | −30.7% |
+| σ max, h = 1.25 | 497.88 MPa | 600 | −17.0% |
+
+δ converges to within 0.6%. σ is honestly rougher, as expected
+of this method: the reported maximum is sampled at element
+centroids, which sit h/2 away from the wall and h/2 inside the
+outer fibre (at h = 1.25 the outer layer's centroid sits at
+c = 4.375 of 5 mm, i.e. an exact field would already read 525
+there), trilinear elements are stiff in bending, and the
+clamped wall adds its own local effects. It improves
+monotonically with refinement; it is a guide number, not a
+certified peak stress.
+
+Supporting checks, as measured: uniaxial tension (40×10×10,
+10 000 N → P/A = 100 MPa): the 64 interior elements' centroid
+von Mises deviate from 100 by **at most 0.13 MPa**, and the
+loaded face's mean stretch is 0.020316 mm against the analytic
+σL/E = 0.020000 (+1.6%, the clamped end's Saint-Venant layer).
+Assembly symmetry verified directly by Maxwell–Betti
+reciprocity: F·u agrees to the printed precision (six decimals)
+between the two reciprocal load cases. A single clamped element
+does NOT reproduce P/A (VM = 8.50 of 10): the clamped face's
+nodes are held in all directions and cannot make the Poisson
+contraction — the uniform field is not its discrete solution;
+the test pins this explained behaviour, and the patch test
+above is the exactness gate. Sanity: zero fixity →
+`MC_ERR_FEM_SINGULAR`; one fixed node → clean FEM error (never
+a result); a load placed only on the fixed face →
+`MC_ERR_INVALID_ARG`; element cap and scan cap → clean errors.
+The demo's holed plate at h = 2 (1 920 elements) meshes with
+0.96% volume drift and solves in ~0.14 s on the host.
+
+Host wall-times (2-core sandbox VM, indicative only): beam
+h = 1.25 mesh 0.47 s / solve 0.30 s (331 iterations); beam
+h = 2.5 solve 0.02 s; plate mesh 0.55 s / solve 0.14 s. Expect
+device times of the same order for meshes of this size; at the
+250 000-element cap the CSR matrix is several hundred MB and a
+solve is a minutes-scale job — the app's Fine setting on a
+typical part lands far below the cap.
+
+App behaviour built on this (DemoApp, `FEM.swift`): with a
+current body present, **FEM** opens the analysis panel over the
+same 3D view. Faces are picked by tapping (SceneKit hit test →
+triangle ordinal → the tessellation's per-face range → census
+face index) and coloured in place: fixed blue, loaded orange.
+Controls: Fix/Load mode, force per loaded face (N, stepper +
+field), direction Push in / Pull out (along the face's outward
+normal; non-planar faces use centre-outward), material presets
+(PLA 3 500 MPa ν 0.36 · Aluminum 69 000 ν 0.33 · Steel
+200 000 ν 0.30), mesh size Coarse/Medium/Fine (voxel = bbox max
+dimension / 16 / 32 / 64) with the realised node/element counts
+shown after meshing, and a plainly-worded warning when the mesh
+volume drifts more than 5% from the solid's. Results re-colour
+the voxel surface by node von Mises (blue → red, legend with
+the maximum), with max von Mises, max displacement and solver
+iterations in large type; Reset returns to the plain body.
+Caption in the UI: "Basic linear stress analysis — voxel
+mesh."
 
 ## Xcode project
 

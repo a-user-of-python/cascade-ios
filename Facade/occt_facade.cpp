@@ -6,11 +6,16 @@
 
 #include "occt_facade.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <map>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <BRepAdaptor_Curve.hxx>
@@ -22,7 +27,9 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
@@ -408,6 +415,166 @@ MCFacadeShape* edgeOp(MCFacadeShape* s, double value, bool isFillet,
     setOcctError(err, what, e);
     return nullptr;
   }
+}
+
+// ------------------------------------------------------------ FEM
+// Section 11's implementation: the project's own numerical code
+// (see the header for the method and its stated limits). OCCT is
+// used for geometry queries only — BRepClass3d_SolidClassifier
+// decides which voxel cells are inside, BRepExtrema_DistShapeShape
+// maps B-rep faces to mesh nodes, the census supplies face
+// indices. Everything numerical (element stiffness, assembly,
+// PCG, stress recovery) is plain C++ below.
+
+struct FemMeshImpl {
+  TopoDS_Shape shape;  // kept alive: face indices refer to it
+  double voxel = 0.0;
+  double origin[3] = {0, 0, 0};  // grid origin (bbox min)
+  int cells[3] = {0, 0, 0};      // grid cells per axis
+  std::vector<double> nodePos;   // 3 per node
+  std::vector<int> elems;        // 8 node indices per element
+  std::vector<int> surfQuads;    // 4 node indices per boundary quad
+  std::vector<int> surfQuadFace; // census face per quad, or -1
+  std::vector<int> surfNodes;    // sorted unique boundary nodes
+  std::vector<TopoDS_Face> faces;      // census order
+  std::vector<Bnd_Box> faceBoxes;      // per-face optimal bboxes
+  std::map<int, std::vector<int>> nodesOnFaceCache;
+};
+
+struct FemResultImpl {
+  int nodeCount = 0;
+  std::vector<double> disp;    // 3 per node
+  std::vector<double> nodeVM;  // node-averaged von Mises
+  std::vector<double> elemVM;  // per-element centroid von Mises
+  double maxVM = 0.0;
+  double maxDisp = 0.0;
+  int iterations = 0;
+  double relResidual = 0.0;
+};
+
+FemMeshImpl& femOf(MCFacadeFemMesh* h) {
+  return *static_cast<FemMeshImpl*>(h->_impl);
+}
+const FemMeshImpl& femOf(const MCFacadeFemMesh* h) {
+  return *static_cast<const FemMeshImpl*>(h->_impl);
+}
+FemResultImpl& femResOf(MCFacadeFemResult* h) {
+  return *static_cast<FemResultImpl*>(h->_impl);
+}
+
+// Point (node) to B-rep face distance via OCCT's distance query.
+// Returns +infinity when the query does not complete.
+double femPointFaceDistance(const gp_Pnt& p, const TopoDS_Face& face) {
+  BRepBuilderAPI_MakeVertex mk(p);
+  BRepExtrema_DistShapeShape dss(mk.Vertex(), face);
+  dss.Perform();
+  if (!dss.IsDone()) return 1e300;
+  return dss.Value();
+}
+
+bool femPointInBox(const gp_Pnt& p, const Bnd_Box& box, double inflate) {
+  double x0, y0, z0, x1, y1, z1;
+  box.Get(x0, y0, z0, x1, y1, z1);
+  return p.X() >= x0 - inflate && p.X() <= x1 + inflate &&
+         p.Y() >= y0 - inflate && p.Y() <= y1 + inflate &&
+         p.Z() >= z0 - inflate && p.Z() <= z1 + inflate;
+}
+
+// The nodes-on-face computation behind mc_fem_nodes_on_face and
+// the solver's load mapping (cached on the mesh).
+const std::vector<int>& femNodesOnFace(FemMeshImpl& m, int faceIndex) {
+  auto it = m.nodesOnFaceCache.find(faceIndex);
+  if (it != m.nodesOnFaceCache.end()) return it->second;
+  std::vector<int> out;
+  const TopoDS_Face& face = m.faces[(size_t)faceIndex];
+  const Bnd_Box& box = m.faceBoxes[(size_t)faceIndex];
+  const double tol = 0.75 * m.voxel;
+  for (int n : m.surfNodes) {
+    const gp_Pnt p(m.nodePos[3 * (size_t)n], m.nodePos[3 * (size_t)n + 1],
+                   m.nodePos[3 * (size_t)n + 2]);
+    if (!femPointInBox(p, box, tol)) continue;
+    if (femPointFaceDistance(p, face) < tol) out.push_back(n);
+  }
+  auto res = m.nodesOnFaceCache.emplace(faceIndex, std::move(out));
+  return res.first->second;
+}
+
+// Isotropic elasticity matrix (Voigt, engineering shear strains).
+void femDMatrix(double E, double nu, double D[6][6]) {
+  for (int i = 0; i < 6; ++i)
+    for (int j = 0; j < 6; ++j) D[i][j] = 0.0;
+  const double c = E / ((1.0 + nu) * (1.0 - 2.0 * nu));
+  D[0][0] = D[1][1] = D[2][2] = c * (1.0 - nu);
+  D[0][1] = D[0][2] = D[1][0] = D[1][2] = D[2][0] = D[2][1] = c * nu;
+  D[3][3] = D[4][4] = D[5][5] = c * (1.0 - 2.0 * nu) / 2.0;
+}
+
+// Strain-displacement matrix of the trilinear hex8 at parametric
+// point (a, b, c) for a cube element of side h. Local node order
+// matches the connectivity order documented in the header.
+void femBMatrix(double h, double a, double b, double c, double B[6][24]) {
+  static const double sgn[8][3] = {{-1, -1, -1}, {1, -1, -1}, {1, 1, -1},
+                                   {-1, 1, -1}, {-1, -1, 1}, {1, -1, 1},
+                                   {1, 1, 1},   {-1, 1, 1}};
+  for (int i = 0; i < 6; ++i)
+    for (int j = 0; j < 24; ++j) B[i][j] = 0.0;
+  const double s = 2.0 / h;  // d(parametric)/d(cartesian)
+  for (int i = 0; i < 8; ++i) {
+    const double dNx = 0.125 * sgn[i][0] * (1.0 + b * sgn[i][1]) *
+                       (1.0 + c * sgn[i][2]) * s;
+    const double dNy = 0.125 * (1.0 + a * sgn[i][0]) * sgn[i][1] *
+                       (1.0 + c * sgn[i][2]) * s;
+    const double dNz = 0.125 * (1.0 + a * sgn[i][0]) *
+                       (1.0 + b * sgn[i][1]) * sgn[i][2] * s;
+    B[0][3 * i + 0] = dNx;
+    B[1][3 * i + 1] = dNy;
+    B[2][3 * i + 2] = dNz;
+    B[3][3 * i + 0] = dNy;
+    B[3][3 * i + 1] = dNx;
+    B[4][3 * i + 1] = dNz;
+    B[4][3 * i + 2] = dNy;
+    B[5][3 * i + 0] = dNz;
+    B[5][3 * i + 2] = dNx;
+  }
+}
+
+// Element stiffness of the voxel cube: full 2x2x2 Gauss
+// integration. Every element of a voxel mesh is the same cube, so
+// one matrix serves the mesh (exact here, not an approximation).
+void femStiffness(double h, double E, double nu, double Ke[24][24]) {
+  double D[6][6];
+  femDMatrix(E, nu, D);
+  for (int i = 0; i < 24; ++i)
+    for (int j = 0; j < 24; ++j) Ke[i][j] = 0.0;
+  const double g = 0.57735026918962577651;  // 1/sqrt(3)
+  const double detJ = (h / 2.0) * (h / 2.0) * (h / 2.0);
+  const double pts[2] = {-g, g};
+  for (int ia = 0; ia < 2; ++ia)
+    for (int ib = 0; ib < 2; ++ib)
+      for (int ic = 0; ic < 2; ++ic) {
+        double B[6][24];
+        femBMatrix(h, pts[ia], pts[ib], pts[ic], B);
+        // Ke += B^T D B detJ (all Gauss weights are 1)
+        double DB[6][24];
+        for (int r = 0; r < 6; ++r)
+          for (int j = 0; j < 24; ++j) {
+            double ssum = 0.0;
+            for (int k = 0; k < 6; ++k) ssum += D[r][k] * B[k][j];
+            DB[r][j] = ssum;
+          }
+        for (int i = 0; i < 24; ++i)
+          for (int j = 0; j < 24; ++j) {
+            double ssum = 0.0;
+            for (int r = 0; r < 6; ++r) ssum += B[r][i] * DB[r][j];
+            Ke[i][j] += ssum * detJ;
+          }
+      }
+}
+
+double femVonMises(const double s[6]) {
+  const double d1 = s[0] - s[1], d2 = s[1] - s[2], d3 = s[2] - s[0];
+  return std::sqrt(0.5 * (d1 * d1 + d2 * d2 + d3 * d3) +
+                   3.0 * (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]));
 }
 
 }  // namespace
@@ -1175,6 +1342,721 @@ int mc_export_step(MCFacadeShape* s, const char* path, int* err) {
     setOcctError(err, "mc_export_step", e);
     return MC_ERR_OCCT;
   }
+}
+
+// ------------------------------------------------------------ FEM
+// Section 11: voxel mesher + linear-static solver (the project's
+// own numerical code; see occt_facade.h for the method statement).
+
+MCFacadeFemMesh* mc_fem_mesh(MCFacadeShape* shape, double voxelSizeMM,
+                             int* err) {
+  if (!shape) {
+    fail(err, MC_ERR_INVALID_ARG, "mc_fem_mesh: null shape handle");
+    return nullptr;
+  }
+  if (!(voxelSizeMM > 0.0)) {
+    fail(err, MC_ERR_INVALID_ARG, "mc_fem_mesh: voxel size must be > 0");
+    return nullptr;
+  }
+  try {
+    const TopoDS_Shape& src = shapeOf(shape);
+    // Solids to classify against (a compound contributes each of
+    // its solids; a lone solid contributes itself).
+    std::vector<TopoDS_Shape> solids;
+    for (TopExp_Explorer ex(src, TopAbs_SOLID); ex.More(); ex.Next())
+      solids.push_back(ex.Current());
+    if (solids.empty()) {
+      fail(err, MC_ERR_OCCT, "mc_fem_mesh: shape contains no solid");
+      return nullptr;
+    }
+    Bnd_Box bb;
+    BRepBndLib::AddOptimal(src, bb, Standard_False, Standard_False);
+    if (bb.IsVoid()) {
+      fail(err, MC_ERR_EMPTY_RESULT, "mc_fem_mesh: bounding box is void");
+      return nullptr;
+    }
+    double mn[3], mx[3];
+    bb.Get(mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]);
+    const double h = voxelSizeMM;
+    int cells[3];
+    for (int a = 0; a < 3; ++a) {
+      cells[a] =
+          std::max(1, (int)std::ceil((mx[a] - mn[a]) / h - 1e-9));
+    }
+    const long long scanned =
+        (long long)cells[0] * cells[1] * cells[2];
+    if (scanned > 8000000LL) {
+      fail(err, MC_ERR_INVALID_ARG,
+           "mc_fem_mesh: voxel size too small for this shape (grid "
+           "scan cap exceeded) — use a larger voxel size");
+      return nullptr;
+    }
+
+    std::vector<std::unique_ptr<BRepClass3d_SolidClassifier>> classifiers;
+    for (const TopoDS_Shape& s : solids) {
+      auto cls = std::make_unique<BRepClass3d_SolidClassifier>();
+      cls->Load(s);
+      classifiers.push_back(std::move(cls));
+    }
+    auto inside = [&](const gp_Pnt& p) {
+      for (auto& cls : classifiers) {
+        cls->Perform(p, 1e-7);
+        if (cls->State() == TopAbs_IN) return true;
+      }
+      return false;
+    };
+
+    auto* impl = new FemMeshImpl();
+    impl->shape = src;
+    impl->voxel = h;
+    for (int a = 0; a < 3; ++a) {
+      impl->origin[a] = mn[a];
+      impl->cells[a] = cells[a];
+    }
+    const int nx = cells[0], ny = cells[1], nz = cells[2];
+    std::vector<int> gridId(
+        (size_t)(nx + 1) * (ny + 1) * (nz + 1), -1);
+    auto gridIndex = [&](int i, int j, int k) {
+      return ((size_t)i * (ny + 1) + (size_t)j) * (nz + 1) + (size_t)k;
+    };
+    // Cell corner offsets in the documented hex8 order.
+    static const int corner[8][3] = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0},
+                                     {0, 1, 0}, {0, 0, 1}, {1, 0, 1},
+                                     {1, 1, 1}, {0, 1, 1}};
+    bool capHit = false;
+    for (int i = 0; i < nx && !capHit; ++i)
+      for (int j = 0; j < ny && !capHit; ++j)
+        for (int k = 0; k < nz; ++k) {
+          const gp_Pnt centre(mn[0] + (i + 0.5) * h, mn[1] + (j + 0.5) * h,
+                              mn[2] + (k + 0.5) * h);
+          if (!inside(centre)) continue;
+          if ((int)(impl->elems.size() / 8) >= MC_FEM_MAX_ELEMENTS) {
+            capHit = true;
+            break;
+          }
+          for (const auto& c : corner) {
+            const int gi = i + c[0], gj = j + c[1], gk = k + c[2];
+            const size_t idx = gridIndex(gi, gj, gk);
+            int id = gridId[idx];
+            if (id < 0) {
+              id = (int)(impl->nodePos.size() / 3);
+              gridId[idx] = id;
+              impl->nodePos.push_back(mn[0] + gi * h);
+              impl->nodePos.push_back(mn[1] + gj * h);
+              impl->nodePos.push_back(mn[2] + gk * h);
+            }
+            impl->elems.push_back(id);
+          }
+        }
+    if (capHit) {
+      delete impl;
+      fail(err, MC_ERR_INVALID_ARG,
+           "mc_fem_mesh: mesh would exceed the element cap "
+           "(250000) — use a larger voxel size");
+      return nullptr;
+    }
+    if (impl->elems.empty()) {
+      delete impl;
+      fail(err, MC_ERR_EMPTY_RESULT,
+           "mc_fem_mesh: no voxel centre fell inside the solid — use "
+           "a smaller voxel size");
+      return nullptr;
+    }
+
+    // Boundary surface: a quad (4 nodes) shared by exactly one
+    // element. Local face node orders follow the outward-normal
+    // right-hand rule (see header).
+    static const int lface[6][4] = {{0, 3, 2, 1}, {4, 5, 6, 7},
+                                    {0, 1, 5, 4}, {3, 7, 6, 2},
+                                    {0, 4, 7, 3}, {1, 2, 6, 5}};
+    struct QuadRef {
+      int count = 0;
+      int elem = -1;
+      int face = -1;
+    };
+    std::map<std::array<int, 4>, QuadRef> quadMap;
+    const int nElem = (int)(impl->elems.size() / 8);
+    for (int e = 0; e < nElem; ++e) {
+      for (int f = 0; f < 6; ++f) {
+        std::array<int, 4> key = {impl->elems[8 * (size_t)e + lface[f][0]],
+                                  impl->elems[8 * (size_t)e + lface[f][1]],
+                                  impl->elems[8 * (size_t)e + lface[f][2]],
+                                  impl->elems[8 * (size_t)e + lface[f][3]]};
+        std::array<int, 4> sorted = key;
+        std::sort(sorted.begin(), sorted.end());
+        QuadRef& ref = quadMap[sorted];
+        if (ref.count == 0) {
+          ref.elem = e;
+          ref.face = f;
+        }
+        ++ref.count;
+      }
+    }
+    std::vector<std::array<int, 4>> boundary;  // outward node order
+    for (const auto& kv : quadMap) {
+      if (kv.second.count != 1) continue;
+      const int e = kv.second.elem, f = kv.second.face;
+      std::array<int, 4> q = {impl->elems[8 * (size_t)e + lface[f][0]],
+                              impl->elems[8 * (size_t)e + lface[f][1]],
+                              impl->elems[8 * (size_t)e + lface[f][2]],
+                              impl->elems[8 * (size_t)e + lface[f][3]]};
+      boundary.push_back(q);
+      for (int n : q) impl->surfQuads.push_back(n);
+    }
+    // Surface nodes: the sorted unique set the boundary uses.
+    {
+      std::vector<int> sn = impl->surfQuads;
+      std::sort(sn.begin(), sn.end());
+      sn.erase(std::unique(sn.begin(), sn.end()), sn.end());
+      impl->surfNodes = std::move(sn);
+    }
+    // Census faces + their boxes (the shared index space), then
+    // the boundary-quad -> B-rep-face association: the face
+    // nearest each quad's centre.
+    {
+      NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>
+          faceMap;
+      TopExp::MapShapes(src, TopAbs_FACE, faceMap);
+      for (int fi = 1; fi <= faceMap.Extent(); ++fi) {
+        const TopoDS_Face face = TopoDS::Face(faceMap.FindKey(fi));
+        impl->faces.push_back(face);
+        Bnd_Box fb;
+        BRepBndLib::AddOptimal(face, fb, Standard_False, Standard_False);
+        impl->faceBoxes.push_back(fb);
+      }
+      const double reach = 1.5 * h;
+      impl->surfQuadFace.assign(boundary.size(), -1);
+      for (size_t q = 0; q < boundary.size(); ++q) {
+        double cx = 0, cy = 0, cz = 0;
+        for (int n : boundary[q]) {
+          cx += impl->nodePos[3 * (size_t)n];
+          cy += impl->nodePos[3 * (size_t)n + 1];
+          cz += impl->nodePos[3 * (size_t)n + 2];
+        }
+        const gp_Pnt centre(cx / 4, cy / 4, cz / 4);
+        double best = 1e300;
+        int bestFace = -1;
+        for (size_t fi = 0; fi < impl->faces.size(); ++fi) {
+          if (!femPointInBox(centre, impl->faceBoxes[fi], reach)) continue;
+          const double d = femPointFaceDistance(centre, impl->faces[fi]);
+          if (d < best) {
+            best = d;
+            bestFace = (int)fi;
+          }
+        }
+        if (best <= reach) impl->surfQuadFace[q] = bestFace;
+      }
+    }
+
+    if (err) *err = MC_OK;
+    auto* handle = new MCFacadeFemMesh();
+    handle->_impl = impl;
+    return handle;
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_fem_mesh", e);
+    return nullptr;
+  }
+}
+
+void mc_free_fem_mesh(MCFacadeFemMesh* m) {
+  if (!m) return;
+  delete static_cast<FemMeshImpl*>(m->_impl);
+  delete m;
+}
+
+int mc_fem_mesh_counts(MCFacadeFemMesh* m, int* nodes, int* elements,
+                       int* surfaceQuads, int* err) {
+  if (!m) return fail(err, MC_ERR_INVALID_ARG, "mc_fem_mesh_counts: null mesh");
+  const FemMeshImpl& im = femOf(m);
+  if (nodes) *nodes = (int)(im.nodePos.size() / 3);
+  if (elements) *elements = (int)(im.elems.size() / 8);
+  if (surfaceQuads) *surfaceQuads = (int)(im.surfQuads.size() / 4);
+  if (err) *err = MC_OK;
+  return MC_OK;
+}
+
+double mc_fem_mesh_volume(MCFacadeFemMesh* m, int* err) {
+  if (!m) {
+    fail(err, MC_ERR_INVALID_ARG, "mc_fem_mesh_volume: null mesh");
+    return 0.0;
+  }
+  const FemMeshImpl& im = femOf(m);
+  if (err) *err = MC_OK;
+  const double h = im.voxel;
+  return (double)(im.elems.size() / 8) * h * h * h;
+}
+
+double mc_fem_mesh_voxel_size(MCFacadeFemMesh* m, int* err) {
+  if (!m) {
+    fail(err, MC_ERR_INVALID_ARG, "mc_fem_mesh_voxel_size: null mesh");
+    return 0.0;
+  }
+  if (err) *err = MC_OK;
+  return femOf(m).voxel;
+}
+
+int mc_fem_mesh_nodes(MCFacadeFemMesh* m, double* out, int* err) {
+  if (!m || !out)
+    return fail(err, MC_ERR_INVALID_ARG, "mc_fem_mesh_nodes: null argument");
+  const FemMeshImpl& im = femOf(m);
+  std::memcpy(out, im.nodePos.data(), sizeof(double) * im.nodePos.size());
+  if (err) *err = MC_OK;
+  return MC_OK;
+}
+
+int mc_fem_mesh_elements(MCFacadeFemMesh* m, int* out, int* err) {
+  if (!m || !out)
+    return fail(err, MC_ERR_INVALID_ARG, "mc_fem_mesh_elements: null argument");
+  const FemMeshImpl& im = femOf(m);
+  std::memcpy(out, im.elems.data(), sizeof(int) * im.elems.size());
+  if (err) *err = MC_OK;
+  return MC_OK;
+}
+
+int mc_fem_mesh_surface_data(MCFacadeFemMesh* m, int* quads, int* quadFaces,
+                             int* err) {
+  if (!m)
+    return fail(err, MC_ERR_INVALID_ARG,
+                "mc_fem_mesh_surface_data: null mesh");
+  const FemMeshImpl& im = femOf(m);
+  if (quads)
+    std::memcpy(quads, im.surfQuads.data(),
+                sizeof(int) * im.surfQuads.size());
+  if (quadFaces)
+    std::memcpy(quadFaces, im.surfQuadFace.data(),
+                sizeof(int) * im.surfQuadFace.size());
+  if (err) *err = MC_OK;
+  return MC_OK;
+}
+
+int mc_fem_nodes_on_face(MCFacadeFemMesh* m, int faceIndex, int* outNodes,
+                         int outCapacity, int* outCount, int* err) {
+  if (!m || !outCount)
+    return fail(err, MC_ERR_INVALID_ARG,
+                "mc_fem_nodes_on_face: null argument");
+  FemMeshImpl& im = femOf(m);
+  if (faceIndex < 0 || faceIndex >= (int)im.faces.size())
+    return fail(err, MC_ERR_INVALID_ARG,
+                "mc_fem_nodes_on_face: face index out of range");
+  try {
+    const std::vector<int>& nodes = femNodesOnFace(im, faceIndex);
+    *outCount = (int)nodes.size();
+    if (outNodes && outCapacity > 0) {
+      const int n = std::min(outCapacity, (int)nodes.size());
+      std::memcpy(outNodes, nodes.data(), sizeof(int) * (size_t)n);
+    }
+    if (err) *err = MC_OK;
+    return MC_OK;
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_fem_nodes_on_face", e);
+    return MC_ERR_OCCT;
+  }
+}
+
+MCFacadeFemResult* mc_fem_solve(MCFacadeFemMesh* mesh, double E, double nu,
+                                const int* fixedNodes, int fixedCount,
+                                const int* loadFaces,
+                                const double* loadForces,
+                                const double* loadDirs, int loadCount,
+                                int* err) {
+  if (!mesh) {
+    fail(err, MC_ERR_INVALID_ARG, "mc_fem_solve: null mesh");
+    return nullptr;
+  }
+  if (!(E > 0.0) || !(nu > -1.0 && nu < 0.5)) {
+    fail(err, MC_ERR_INVALID_ARG,
+         "mc_fem_solve: need E > 0 and -1 < nu < 0.5");
+    return nullptr;
+  }
+  if (loadCount < 0 || (loadCount > 0 && (!loadFaces || !loadForces ||
+                                           !loadDirs))) {
+    fail(err, MC_ERR_INVALID_ARG, "mc_fem_solve: null load arrays");
+    return nullptr;
+  }
+  if (fixedCount < 0 || (fixedCount > 0 && !fixedNodes)) {
+    fail(err, MC_ERR_INVALID_ARG, "mc_fem_solve: null fixed nodes");
+    return nullptr;
+  }
+  FemMeshImpl& im = femOf(mesh);
+  const int nNode = (int)(im.nodePos.size() / 3);
+  const int nElem = (int)(im.elems.size() / 8);
+  const double h = im.voxel;
+
+  std::vector<char> isFixed((size_t)nNode, 0);
+  for (int i = 0; i < fixedCount; ++i) {
+    const int n = fixedNodes[i];
+    if (n < 0 || n >= nNode) {
+      fail(err, MC_ERR_INVALID_ARG, "mc_fem_solve: fixed node out of range");
+      return nullptr;
+    }
+    isFixed[(size_t)n] = 1;
+  }
+  if (fixedCount == 0) {
+    fail(err, MC_ERR_FEM_SINGULAR,
+         "mc_fem_solve: nothing is fixed — the stiffness is singular "
+         "(rigid-body motion)");
+    return nullptr;
+  }
+  std::vector<int> freeIndex((size_t)nNode, -1);
+  int nFree = 0;
+  for (int n = 0; n < nNode; ++n)
+    if (!isFixed[(size_t)n]) freeIndex[(size_t)n] = nFree++;
+  if (nFree == 0) {
+    fail(err, MC_ERR_FEM_SINGULAR,
+         "mc_fem_solve: every node is fixed — nothing to solve");
+    return nullptr;
+  }
+  const int ndof = 3 * nFree;
+
+  // Load vector over free dofs: each face's total force spread
+  // evenly over its mapped nodes.
+  std::vector<double> b((size_t)ndof, 0.0);
+  try {
+    for (int li = 0; li < loadCount; ++li) {
+      const int fi = loadFaces[li];
+      if (fi < 0 || fi >= (int)im.faces.size()) {
+        fail(err, MC_ERR_INVALID_ARG, "mc_fem_solve: load face out of range");
+        return nullptr;
+      }
+      double dir[3] = {loadDirs[3 * (size_t)li], loadDirs[3 * (size_t)li + 1],
+                       loadDirs[3 * (size_t)li + 2]};
+      const double dn =
+          std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+      if (dn < 1e-12) {
+        fail(err, MC_ERR_INVALID_ARG,
+             "mc_fem_solve: load direction is degenerate");
+        return nullptr;
+      }
+      const std::vector<int>& nodes = femNodesOnFace(im, fi);
+      if (nodes.empty()) {
+        fail(err, MC_ERR_INVALID_ARG,
+             "mc_fem_solve: a load face maps to no mesh nodes — refine "
+             "the mesh or pick another face");
+        return nullptr;
+      }
+      const double per = loadForces[li] / (double)nodes.size();
+      for (int n : nodes) {
+        const int fn = freeIndex[(size_t)n];
+        if (fn < 0) continue;  // fixed node: its share is a reaction
+        b[3 * (size_t)fn + 0] += per * dir[0] / dn;
+        b[3 * (size_t)fn + 1] += per * dir[1] / dn;
+        b[3 * (size_t)fn + 2] += per * dir[2] / dn;
+      }
+    }
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_fem_solve", e);
+    return nullptr;
+  }
+  double bNorm = 0.0;
+  for (double v : b) bNorm += v * v;
+  bNorm = std::sqrt(bNorm);
+  if (!(bNorm > 0.0)) {
+    fail(err, MC_ERR_INVALID_ARG,
+         "mc_fem_solve: loads produce no force on any free node");
+    return nullptr;
+  }
+
+  // Element stiffness (one cube serves the whole mesh).
+  double Ke[24][24];
+  femStiffness(h, E, nu, Ke);
+
+  // ---- Assembly: block CSR over free nodes (3x3 blocks) ----
+  std::vector<unsigned long long> pairs;
+  pairs.reserve((size_t)nElem * 64);
+  for (int e = 0; e < nElem; ++e) {
+    int fn[8];
+    for (int a = 0; a < 8; ++a)
+      fn[a] = freeIndex[(size_t)im.elems[8 * (size_t)e + a]];
+    for (int a = 0; a < 8; ++a) {
+      if (fn[a] < 0) continue;
+      for (int c = 0; c < 8; ++c) {
+        if (fn[c] < 0) continue;
+        pairs.push_back(((unsigned long long)(unsigned)fn[a] << 32) |
+                        (unsigned)fn[c]);
+      }
+    }
+  }
+  std::sort(pairs.begin(), pairs.end());
+  pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
+  const size_t nBlocks = pairs.size();
+  if (nBlocks > 9000000) {
+    fail(err, MC_ERR_INVALID_ARG,
+         "mc_fem_solve: mesh too large to assemble — use a coarser "
+         "voxel size");
+    return nullptr;
+  }
+  std::vector<int> rowPtr((size_t)nFree + 1, 0);
+  for (unsigned long long key : pairs) ++rowPtr[(size_t)(key >> 32) + 1];
+  for (int i = 0; i < nFree; ++i) rowPtr[(size_t)i + 1] += rowPtr[(size_t)i];
+  std::vector<int> colNodes(nBlocks, 0);
+  for (size_t p = 0; p < nBlocks; ++p)
+    colNodes[p] = (int)(pairs[p] & 0xffffffffULL);
+  pairs.clear();
+  pairs.shrink_to_fit();
+  std::vector<double> vals(nBlocks * 9, 0.0);
+  for (int e = 0; e < nElem; ++e) {
+    int fn[8], gn[8];
+    for (int a = 0; a < 8; ++a) {
+      gn[a] = im.elems[8 * (size_t)e + a];
+      fn[a] = freeIndex[(size_t)gn[a]];
+    }
+    for (int a = 0; a < 8; ++a) {
+      if (fn[a] < 0) continue;
+      const int rs = rowPtr[(size_t)fn[a]], re = rowPtr[(size_t)fn[a] + 1];
+      for (int c = 0; c < 8; ++c) {
+        if (fn[c] < 0) continue;
+        const int* hit = std::lower_bound(colNodes.data() + rs,
+                                          colNodes.data() + re, fn[c]);
+        if (hit == colNodes.data() + re || *hit != fn[c]) continue;
+        double* blk = &vals[9 * (size_t)(hit - colNodes.data())];
+        for (int r = 0; r < 3; ++r)
+          for (int cc = 0; cc < 3; ++cc)
+            blk[3 * r + cc] += Ke[3 * a + r][3 * c + cc];
+      }
+    }
+  }
+  // Jacobi preconditioner = the diagonal; a non-positive diagonal
+  // entry means the reduced stiffness is not positive definite.
+  std::vector<double> diag((size_t)ndof, 0.0);
+  for (int rn = 0; rn < nFree; ++rn) {
+    for (int blk = rowPtr[(size_t)rn]; blk < rowPtr[(size_t)rn + 1]; ++blk) {
+      if (colNodes[(size_t)blk] != rn) continue;
+      for (int c = 0; c < 3; ++c)
+        diag[3 * (size_t)rn + c] = vals[9 * (size_t)blk + 3 * c + c];
+    }
+  }
+  for (int i = 0; i < ndof; ++i) {
+    if (!(diag[(size_t)i] > 0.0)) {
+      fail(err, MC_ERR_FEM_SINGULAR,
+           "mc_fem_solve: stiffness has a non-positive diagonal — the "
+           "part is not fixed enough");
+      return nullptr;
+    }
+  }
+
+  auto matvec = [&](const std::vector<double>& x, std::vector<double>& y) {
+    std::fill(y.begin(), y.end(), 0.0);
+    for (int rn = 0; rn < nFree; ++rn) {
+      double y0 = 0.0, y1 = 0.0, y2 = 0.0;
+      for (int blk = rowPtr[(size_t)rn]; blk < rowPtr[(size_t)rn + 1];
+           ++blk) {
+        const int cn = colNodes[(size_t)blk];
+        const double* K = &vals[9 * (size_t)blk];
+        const double x0 = x[3 * (size_t)cn], x1 = x[3 * (size_t)cn + 1],
+                     x2 = x[3 * (size_t)cn + 2];
+        y0 += K[0] * x0 + K[1] * x1 + K[2] * x2;
+        y1 += K[3] * x0 + K[4] * x1 + K[5] * x2;
+        y2 += K[6] * x0 + K[7] * x1 + K[8] * x2;
+      }
+      y[3 * (size_t)rn] = y0;
+      y[3 * (size_t)rn + 1] = y1;
+      y[3 * (size_t)rn + 2] = y2;
+    }
+  };
+
+  // ---- Preconditioned conjugate gradients (Jacobi) ----
+  // Convergence is accepted ONLY on the recomputed (true)
+  // residual r = b - A x: the recursive CG residual can drift
+  // from it, and on a singular-but-almost-consistent system (say,
+  // one clamped node leaving rigid-body modes the load barely
+  // excites) the recursive value can fake convergence while the
+  // true residual plateaus. Each time the recursive residual
+  // drops well under the tolerance, the true residual is checked;
+  // if it misses, CG restarts from the true residual. A plateaued
+  // true residual gives up early instead of burning the cap.
+  const int kMaxIter = 10000;
+  const double kTol = 1e-8;
+  std::vector<double> x((size_t)ndof, 0.0), r(b), z((size_t)ndof),
+      p((size_t)ndof), Ap((size_t)ndof);
+  auto dot = [](const std::vector<double>& a, const std::vector<double>& c) {
+    double s = 0.0;
+    for (size_t i = 0; i < a.size(); ++i) s += a[i] * c[i];
+    return s;
+  };
+  int iterations = 0;
+  double relRes = 1.0;  // true relative residual, set at each check
+  double prevRelRes = 1e300;
+  int stalls = 0;
+  bool converged = false;
+  bool breakdown = false;
+  while (!converged && !breakdown && iterations < kMaxIter) {
+    for (int i = 0; i < ndof; ++i)
+      z[(size_t)i] = r[(size_t)i] / diag[(size_t)i];
+    p = z;
+    double rz = dot(r, z);
+    while (iterations < kMaxIter) {
+      matvec(p, Ap);
+      const double pAp = dot(p, Ap);
+      if (!(pAp > 0.0) || !std::isfinite(pAp)) {
+        breakdown = true;
+        break;
+      }
+      const double alpha = rz / pAp;
+      for (int i = 0; i < ndof; ++i) {
+        x[(size_t)i] += alpha * p[(size_t)i];
+        r[(size_t)i] -= alpha * Ap[(size_t)i];
+      }
+      ++iterations;
+      if (std::sqrt(dot(r, r)) / bNorm < 0.1 * kTol) break;
+      for (int i = 0; i < ndof; ++i)
+        z[(size_t)i] = r[(size_t)i] / diag[(size_t)i];
+      const double rzNew = dot(r, z);
+      const double beta = rzNew / rz;
+      for (int i = 0; i < ndof; ++i)
+        p[(size_t)i] = z[(size_t)i] + beta * p[(size_t)i];
+      rz = rzNew;
+    }
+    if (breakdown) break;
+    // True residual check: r := b - A x.
+    matvec(x, Ap);
+    double rr = 0.0;
+    for (int i = 0; i < ndof; ++i) {
+      r[(size_t)i] = b[(size_t)i] - Ap[(size_t)i];
+      rr += r[(size_t)i] * r[(size_t)i];
+    }
+    relRes = std::sqrt(rr) / bNorm;
+    if (relRes < kTol) {
+      converged = true;
+      break;
+    }
+    if (relRes > 0.9 * prevRelRes) {
+      if (++stalls >= 3) break;  // plateaued: inconsistent system
+    } else {
+      stalls = 0;
+    }
+    prevRelRes = relRes;
+  }
+  if (breakdown) {
+    fail(err, MC_ERR_FEM_SINGULAR,
+         "mc_fem_solve: solver breakdown (p^T A p <= 0) — the "
+         "stiffness is singular; fix more of the part");
+    return nullptr;
+  }
+  if (!converged) {
+    char msg[192];
+    std::snprintf(msg, sizeof(msg),
+                  "mc_fem_solve: PCG did not converge in %d iterations "
+                  "(true relative residual %.3g, target 1e-8) — the "
+                  "system may be under-fixed",
+                  iterations, relRes);
+    fail(err, MC_ERR_FEM_NO_CONVERGE, msg);
+    return nullptr;
+  }
+  const double finalRelRes = relRes;
+
+  // ---- Stress recovery ----
+  auto* res = new FemResultImpl();
+  res->nodeCount = nNode;
+  res->disp.assign((size_t)3 * nNode, 0.0);
+  for (int n = 0; n < nNode; ++n) {
+    const int fn = freeIndex[(size_t)n];
+    if (fn < 0) continue;
+    res->disp[3 * (size_t)n] = x[3 * (size_t)fn];
+    res->disp[3 * (size_t)n + 1] = x[3 * (size_t)fn + 1];
+    res->disp[3 * (size_t)n + 2] = x[3 * (size_t)fn + 2];
+  }
+  res->maxDisp = 0.0;
+  for (int n = 0; n < nNode; ++n) {
+    const double dx = res->disp[3 * (size_t)n],
+                 dy = res->disp[3 * (size_t)n + 1],
+                 dz = res->disp[3 * (size_t)n + 2];
+    res->maxDisp = std::max(res->maxDisp, std::sqrt(dx * dx + dy * dy + dz * dz));
+  }
+  double D[6][6];
+  femDMatrix(E, nu, D);
+  double Bc[6][24];
+  femBMatrix(h, 0.0, 0.0, 0.0, Bc);  // centroid
+  double DBc[6][24];
+  for (int r2 = 0; r2 < 6; ++r2)
+    for (int j = 0; j < 24; ++j) {
+      double ssum = 0.0;
+      for (int k = 0; k < 6; ++k) ssum += D[r2][k] * Bc[k][j];
+      DBc[r2][j] = ssum;
+    }
+  res->elemVM.assign((size_t)nElem, 0.0);
+  std::vector<double> nodeSum((size_t)nNode, 0.0);
+  std::vector<int> nodeCnt((size_t)nNode, 0);
+  res->maxVM = 0.0;
+  for (int e = 0; e < nElem; ++e) {
+    double ue[24];
+    for (int a = 0; a < 8; ++a) {
+      const int n = im.elems[8 * (size_t)e + a];
+      ue[3 * a] = res->disp[3 * (size_t)n];
+      ue[3 * a + 1] = res->disp[3 * (size_t)n + 1];
+      ue[3 * a + 2] = res->disp[3 * (size_t)n + 2];
+    }
+    double sig[6] = {0, 0, 0, 0, 0, 0};
+    for (int r2 = 0; r2 < 6; ++r2) {
+      double ssum = 0.0;
+      for (int j = 0; j < 24; ++j) ssum += DBc[r2][j] * ue[j];
+      sig[r2] = ssum;
+    }
+    const double vm = femVonMises(sig);
+    res->elemVM[(size_t)e] = vm;
+    res->maxVM = std::max(res->maxVM, vm);
+    for (int a = 0; a < 8; ++a) {
+      const int n = im.elems[8 * (size_t)e + a];
+      nodeSum[(size_t)n] += vm;
+      nodeCnt[(size_t)n] += 1;
+    }
+  }
+  res->nodeVM.assign((size_t)nNode, 0.0);
+  for (int n = 0; n < nNode; ++n)
+    if (nodeCnt[(size_t)n] > 0)
+      res->nodeVM[(size_t)n] = nodeSum[(size_t)n] / nodeCnt[(size_t)n];
+  res->iterations = iterations;
+  res->relResidual = finalRelRes;
+
+  if (err) *err = MC_OK;
+  auto* handle = new MCFacadeFemResult();
+  handle->_impl = res;
+  return handle;
+}
+
+void mc_free_fem_result(MCFacadeFemResult* r) {
+  if (!r) return;
+  delete static_cast<FemResultImpl*>(r->_impl);
+  delete r;
+}
+
+int mc_fem_result_stats(MCFacadeFemResult* r, double* maxVonMises,
+                        double* maxDisplacement, int* iterations,
+                        double* relResidual, int* err) {
+  if (!r)
+    return fail(err, MC_ERR_INVALID_ARG, "mc_fem_result_stats: null result");
+  const FemResultImpl& im = femResOf(r);
+  if (maxVonMises) *maxVonMises = im.maxVM;
+  if (maxDisplacement) *maxDisplacement = im.maxDisp;
+  if (iterations) *iterations = im.iterations;
+  if (relResidual) *relResidual = im.relResidual;
+  if (err) *err = MC_OK;
+  return MC_OK;
+}
+
+int mc_fem_result_node_values(MCFacadeFemResult* r, double* dispOut,
+                              double* vonMisesOut, int* err) {
+  if (!r)
+    return fail(err, MC_ERR_INVALID_ARG,
+                "mc_fem_result_node_values: null result");
+  const FemResultImpl& im = femResOf(r);
+  if (dispOut)
+    std::memcpy(dispOut, im.disp.data(), sizeof(double) * im.disp.size());
+  if (vonMisesOut)
+    std::memcpy(vonMisesOut, im.nodeVM.data(),
+                sizeof(double) * im.nodeVM.size());
+  if (err) *err = MC_OK;
+  return MC_OK;
+}
+
+int mc_fem_result_element_von_mises(MCFacadeFemResult* r, double* out,
+                                    int* err) {
+  if (!r || !out)
+    return fail(err, MC_ERR_INVALID_ARG,
+                "mc_fem_result_element_von_mises: null argument");
+  const FemResultImpl& im = femResOf(r);
+  std::memcpy(out, im.elemVM.data(), sizeof(double) * im.elemVM.size());
+  if (err) *err = MC_OK;
+  return MC_OK;
 }
 
 void mc_free_mesh(MCFacadeMesh* m) {

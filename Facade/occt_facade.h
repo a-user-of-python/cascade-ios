@@ -12,12 +12,14 @@
 //
 // ARCHITECTURE PRINCIPLE (Sean's rule): the host app drives; Cascade
 // does the geometry. The app decides WHAT to build; OCCT's own
-// libraries do ALL the geometry. This façade therefore contains no
-// CAD feature logic and no geometry math of its own — each function
-// only translates arguments and buffers across the C ABI, calls the
-// corresponding OCCT operation, translates the result back, and
-// catches every OCCT exception so none crosses the boundary
-// (failures come back as error codes + mc_last_error()).
+// libraries do ALL the geometry. Sections 1–10 of this façade
+// therefore contain no CAD feature logic and no geometry math of
+// their own — each function only translates arguments and buffers
+// across the C ABI, calls the corresponding OCCT operation,
+// translates the result back, and catches every OCCT exception so
+// none crosses the boundary (failures come back as error codes +
+// mc_last_error()). Section 11 (FEM) is the documented exception:
+// the project's own mesh + solver code, built on OCCT queries.
 //
 // If an operation exists in OCCT, it is wrapped here rather than
 // approximated. Handles are opaque; no C++ type crosses the ABI.
@@ -50,6 +52,13 @@
 //   8. Selection census .............. mc_shape_counts, mc_face_info, ...
 //   9. Tessellation .................. mc_tessellate, mc_free_mesh
 //  10. Import / export (STEP) ........ mc_import_step, mc_export_step
+//  11. FEM (mesh + stress analysis) .. mc_fem_mesh, mc_fem_solve, ...
+//
+// Sections 1–10 are the pass-through described above. Section 11
+// (FEM) is the deliberate exception: it is the project's OWN
+// numerical code — a voxel mesher and a linear-static solver —
+// built on top of OCCT geometry queries (classification, distance,
+// census). It is documented as such in its section.
 //
 // LICENCE: the library's OCCT part is Open CASCADE Technology
 // 8.0.1, (c) Open Cascade SAS, GNU LGPL 2.1 with the Open CASCADE
@@ -83,6 +92,11 @@ typedef enum MCFacadeError {
   MC_ERR_INVALID_ARG = 1,  ///< null handle / bad parameter
   MC_ERR_OCCT = 2,         ///< OCCT exception or failed operation
   MC_ERR_EMPTY_RESULT = 3, ///< operation produced a null shape
+  MC_ERR_FEM_SINGULAR = 4, ///< FEM: stiffness is singular (the part
+                           ///< is not fixed enough — rigid-body
+                           ///< motion remains) or a solve breakdown
+  MC_ERR_FEM_NO_CONVERGE = 5, ///< FEM: PCG hit the iteration cap
+                              ///< without reaching the tolerance
 } MCFacadeError;
 
 /// Human-readable message for the most recent failure (static
@@ -387,6 +401,164 @@ MCFacadeShape* mc_import_step(const char* path, int* solidCount, int* err);
 /// a shape written and re-imported keeps its volume, bounding box
 /// and solid count (proven by the library's host test suite).
 int mc_export_step(MCFacadeShape* s, const char* path, int* err);
+
+// ============================================================================
+// 11. FEM — voxel mesh + basic stress analysis
+// ============================================================================
+// This section is the project's OWN numerical code — the one place
+// the library computes something itself instead of wrapping an
+// OCCT operation. OCCT supplies the geometry queries it stands on
+// (solid classification for meshing, point-to-face distance for
+// face mapping, the census for face indices); the mesher, the
+// element formulation and the solver are CascadeKit code.
+//
+// METHOD, stated plainly — this is a BASIC linear analysis:
+// - Mesh: a uniform voxel grid over the shape's bounding box. A
+//   cell is kept when its CENTRE classifies inside the solid
+//   (BRepClass3d_SolidClassifier), so boundaries come out
+//   stair-stepped and features thinner than the voxel size can
+//   vanish entirely. Kept cells are 8-node trilinear hexahedra
+//   (hex8) sharing grid nodes. Compare mc_fem_mesh_volume()
+//   against mc_volume() of the solid: a large drift is the
+//   visible symptom of lost thin features.
+// - Element: hex8 trilinear, full 2x2x2 Gauss integration,
+//   isotropic linear elasticity. Every element is the same cube,
+//   so one stiffness matrix serves the whole mesh (exact for this
+//   mesh, not an approximation).
+// - Assembly + solve: the stiffness matrix is fully assembled
+//   into compressed sparse row form (3x3 nodal blocks) and solved
+//   with preconditioned conjugate gradients (Jacobi
+//   preconditioner), relative residual tolerance 1e-8, iteration
+//   cap 10000. Linear statics, small displacements — nothing
+//   else. A system that is not fixed enough is singular and
+//   fails with MC_ERR_FEM_SINGULAR, never a garbage result.
+// - Loads / fixity are defined on B-rep faces (census indices,
+//   the shared index space of section 8) and mapped to mesh
+//   surface nodes by mc_fem_nodes_on_face. A face's total load
+//   is spread evenly over its mapped nodes.
+// Units: mm, N, MPa (Young's modulus in MPa = N/mm^2),
+// displacements in mm, von Mises stress in MPa.
+
+/// Opaque FEM mesh handle (same complete-struct pattern as
+/// MCFacadeShape, for Swift's ClangImporter).
+typedef struct MCFacadeFemMesh {
+  void* _impl;  ///< façade-private
+} MCFacadeFemMesh;
+
+/// Opaque FEM result handle (owned by the caller, released with
+/// mc_free_fem_result).
+typedef struct MCFacadeFemResult {
+  void* _impl;  ///< façade-private
+} MCFacadeFemResult;
+
+/// Element cap of mc_fem_mesh: a mesh that would keep more cells
+/// than this fails with MC_ERR_INVALID_ARG instead of building.
+/// (The grid scan itself is also capped, at 8,000,000 cells, so a
+/// tiny voxel size on a large shape fails fast rather than
+/// classifying forever.)
+#define MC_FEM_MAX_ELEMENTS 250000
+
+/// Build the voxel mesh of a shape at cubic voxel size
+/// `voxelSizeMM`. The shape must contain at least one solid. The
+/// mesh keeps its own reference to the shape, so the caller's
+/// shape handle may be freed afterwards; face indices used with
+/// this mesh are the census indices of THAT shape.
+MCFacadeFemMesh* mc_fem_mesh(MCFacadeShape* shape, double voxelSizeMM,
+                             int* err);
+void mc_free_fem_mesh(MCFacadeFemMesh* m);
+
+/// Mesh counts: nodes, kept elements (hex8 cells), and boundary
+/// surface quads (see mc_fem_mesh_surface_data). Any output may
+/// be NULL.
+int mc_fem_mesh_counts(MCFacadeFemMesh* m, int* nodes, int* elements,
+                       int* surfaceQuads, int* err);
+
+/// The mesh's realised volume: element count x voxelSize^3. This
+/// is the volume the ANALYSIS sees; drift against mc_volume() of
+/// the solid is the thin-feature warning.
+double mc_fem_mesh_volume(MCFacadeFemMesh* m, int* err);
+
+/// The voxel size the mesh was built with.
+double mc_fem_mesh_voxel_size(MCFacadeFemMesh* m, int* err);
+
+/// Copy out node coordinates: 3 doubles per node (x, y, z) into
+/// `out`, which must hold 3 * nodeCount doubles.
+int mc_fem_mesh_nodes(MCFacadeFemMesh* m, double* out, int* err);
+
+/// Copy out element connectivity: 8 node indices per element.
+/// Node order within an element is the standard hex8 order —
+/// bottom face (z = element min) counter-clockwise seen from
+/// below [(0,0,0), (1,0,0), (1,1,0), (0,1,0)] in cell-corner
+/// units, then the same four on the top face.
+int mc_fem_mesh_elements(MCFacadeFemMesh* m, int* out, int* err);
+
+/// Copy out the boundary surface: `quads` receives 4 node indices
+/// per boundary quad, ordered so the quad's outward normal follows
+/// from the right-hand rule; `quadFaces` receives, per quad, the
+/// census index of the B-rep face the quad belongs to (the face
+/// nearest the quad's centre), or -1 when no face is within
+/// 1.5 voxel sizes. Either output may be NULL. Quad count comes
+/// from mc_fem_mesh_counts.
+int mc_fem_mesh_surface_data(MCFacadeFemMesh* m, int* quads,
+                             int* quadFaces, int* err);
+
+/// Map a B-rep face (census index, section 8) to the mesh surface
+/// nodes lying on it: nodes whose point-to-face distance (OCCT
+/// BRepExtrema) is below 0.75 x voxel size. These node sets are
+/// how fixity and loads attach to the mesh.
+///
+/// `outNodes` may be NULL; `*outCount` always receives the total
+/// number of matching nodes, and up to `outCapacity` of them are
+/// written to `outNodes`. Results are cached per face. Calling
+/// with the same mesh + face repeatedly is cheap.
+int mc_fem_nodes_on_face(MCFacadeFemMesh* m, int faceIndex,
+                         int* outNodes, int outCapacity, int* outCount,
+                         int* err);
+
+/// Solve the linear-static problem on a mesh.
+///
+/// - `E` / `nu`: Young's modulus (MPa) and Poisson's ratio
+///   (must satisfy E > 0 and -1 < nu < 0.5).
+/// - `fixedNodes` / `fixedCount`: mesh node indices clamped in
+///   all three directions (build them with mc_fem_nodes_on_face
+///   over the faces the user picked to fix). No fixed nodes —
+///   or fixity that still leaves a rigid-body mode — fails with
+///   MC_ERR_FEM_SINGULAR.
+/// - Loads: `loadCount` entries; load i acts on B-rep face
+///   `loadFaces[i]` with TOTAL force `loadForces[i]` newtons,
+///   spread evenly over that face's mapped nodes, along the
+///   direction `loadDirs[3*i .. 3*i+2]` (normalised internally).
+///   A load face that maps to no mesh nodes is
+///   MC_ERR_INVALID_ARG (refine the mesh or pick another face).
+MCFacadeFemResult* mc_fem_solve(MCFacadeFemMesh* m, double E, double nu,
+                                const int* fixedNodes, int fixedCount,
+                                const int* loadFaces,
+                                const double* loadForces,
+                                const double* loadDirs, int loadCount,
+                                int* err);
+void mc_free_fem_result(MCFacadeFemResult* r);
+
+/// Solve outcome: `maxVonMises` is the largest per-element
+/// centroid von Mises stress (MPa); `maxDisplacement` the largest
+/// nodal displacement magnitude (mm); `iterations` the PCG
+/// iteration count; `relResidual` the final ||r|| / ||b||. Any
+/// output may be NULL.
+int mc_fem_result_stats(MCFacadeFemResult* r, double* maxVonMises,
+                        double* maxDisplacement, int* iterations,
+                        double* relResidual, int* err);
+
+/// Copy out per-node results: `dispOut` receives 3 doubles per
+/// node (dx, dy, dz, mm), `vonMisesOut` one double per node (the
+/// node-averaged von Mises stress, MPa — the average of the
+/// centroid values of the elements sharing the node). Either
+/// output may be NULL.
+int mc_fem_result_node_values(MCFacadeFemResult* r, double* dispOut,
+                              double* vonMisesOut, int* err);
+
+/// Copy out per-element centroid von Mises stress (MPa), one
+/// double per element.
+int mc_fem_result_element_von_mises(MCFacadeFemResult* r, double* out,
+                                    int* err);
 
 #ifdef __cplusplus
 }
