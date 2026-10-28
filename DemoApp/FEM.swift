@@ -187,18 +187,46 @@ private struct BodyTess {
     }
 }
 
+// MARK: - Tap mode
+
+/// What a tap on the 3D view does. `.select` (the default) only
+/// selects the face — the action row under the view then decides
+/// what happens to it. `.fix` / `.load` are shortcuts for repeated
+/// taps. File scope so PickableView can carry the mode as DATA.
+enum PickMode: String, CaseIterable {
+    case select = "Select"
+    case fix = "Fix faces"
+    case load = "Load faces"
+}
+
 // MARK: - Pickable SceneKit view
 
 /// SCNView with a tap recogniser; a tap reports the census face
-/// under the finger (via the tessellation's triangle ranges).
+/// under the finger (via the tessellation's triangle ranges) AND
+/// the tap mode in force, both as plain values.
+///
+/// ROOT CAUSE of the "taps always lock" bug this replaces: the
+/// handler used to be a closure captured from the panel's body
+/// that read the mode back out of the panel's @State through the
+/// captured view-struct copy. On device the writes from that
+/// closure landed (faces locked and turned blue) but the mode
+/// read kept serving the initial value (.fix), so the Load branch
+/// never ran — no matter what the picker said. The mode now
+/// travels as data: the representable holds it as a stored
+/// property, makeUIView/updateUIView copy it into the
+/// coordinator, and the coordinator hands it to the callback as
+/// an argument. The tap decision consumes the argument, never a
+/// captured view's state.
 private struct PickableView: UIViewRepresentable {
     var scene: SCNScene
     var tess: BodyTess?
-    var onTapFace: (Int) -> Void
+    var mode: PickMode
+    var onTapFace: (Int, PickMode) -> Void
 
     final class Coordinator: NSObject {
         var tess: BodyTess?
-        var onTapFace: (Int) -> Void = { _ in }
+        var mode: PickMode = .select
+        var onTapFace: (Int, PickMode) -> Void = { _, _ in }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -214,6 +242,7 @@ private struct PickableView: UIViewRepresentable {
             action: #selector(Coordinator.handleTap(_:)))
         view.addGestureRecognizer(tap)
         context.coordinator.tess = tess
+        context.coordinator.mode = mode
         context.coordinator.onTapFace = onTapFace
         return view
     }
@@ -221,6 +250,7 @@ private struct PickableView: UIViewRepresentable {
     func updateUIView(_ uiView: SCNView, context: Context) {
         uiView.scene = scene
         context.coordinator.tess = tess
+        context.coordinator.mode = mode
         context.coordinator.onTapFace = onTapFace
     }
 }
@@ -236,7 +266,7 @@ extension PickableView.Coordinator {
         let hits = view.hitTest(point, options: nil)
         guard let hit = hits.first,
               let face = tess.face(forTriangle: hit.faceIndex) else { return }
-        onTapFace(face)
+        onTapFace(face, mode)
     }
 }
 
@@ -246,10 +276,6 @@ struct FemPanelView: View {
     @ObservedObject var currentBody: CurrentBody
     @Environment(\.dismiss) private var dismiss
 
-    private enum PickMode: String, CaseIterable {
-        case fix = "Fix faces"
-        case load = "Load faces"
-    }
     private enum MaterialPreset: String, CaseIterable {
         case pla = "PLA"
         case aluminum = "Aluminum"
@@ -299,7 +325,13 @@ struct FemPanelView: View {
     @State private var selectionScene: SCNScene?
     @State private var selectionMaterials: [SCNMaterial] = []
     @State private var tess: BodyTess?
-    @State private var mode: PickMode = .fix
+    @State private var mode: PickMode = .select
+    /// The face the user last tapped in the view (or picked in the
+    /// loaded list): highlighted yellow, and the action row under
+    /// the view acts on it. Selection is what a tap ALWAYS does;
+    /// fixing/loading happens only via the action row or the
+    /// picker's explicit shortcut modes.
+    @State private var selectedFace: Int?
     @State private var fixedFaces: Set<Int> = []
     @State private var loadedFaces: Set<Int> = []
     /// Per-face load data: every loaded face carries its OWN force
@@ -320,7 +352,7 @@ struct FemPanelView: View {
     @State private var meshSize: MeshSize = .medium
     @State private var femMesh: FemMeshData?
     @State private var femResult: FemResultData?
-    @State private var statusText = "Tap faces in the view to fix or load them."
+    @State private var statusText = "Tap a face in the view to select it, then lock it or put a load on it."
     @State private var isError = false
     @State private var busy = false
     @State private var driftText: String?
@@ -368,7 +400,8 @@ struct FemPanelView: View {
         // Layout contract (this is the fix for the panel Sean hit,
         // where only Fix/Unfix was reachable): the GeometryReader
         // pins the stack to the panel's real height, the 3D view
-        // takes a BOUNDED dominant share of it (54%), and every
+        // takes a BOUNDED dominant share of it (50%, leaving room
+        // for the selected-face action row under it), and every
         // control lives in the ScrollView that takes exactly the
         // remaining height — so no control can ever be pushed
         // below the screen edge, in either orientation. The old
@@ -390,8 +423,8 @@ struct FemPanelView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 ZStack {
-                    PickableView(scene: scene, tess: tess) { face in
-                        tapFace(face)
+                    PickableView(scene: scene, tess: tess, mode: mode) { face, tapMode in
+                        handleTap(face: face, mode: tapMode)
                     }
                     if busy {
                         ProgressView()
@@ -400,9 +433,49 @@ struct FemPanelView: View {
                             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
                     }
                 }
-                .frame(height: Swift.max(200, geo.size.height * 0.54))
+                .frame(height: Swift.max(200, geo.size.height * 0.50))
                 .background(Color(white: 0.12))
                 .clipShape(RoundedRectangle(cornerRadius: 16))
+
+                // Selected-face action row — the primary path, and
+                // the reason a tap can never silently do the wrong
+                // thing: a tap only SELECTS (yellow). Locking and
+                // loading happen only through these buttons, and
+                // the state line always says what the face is now.
+                if let f = selectedFace {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Face \(f) — \(faceStateText(f))")
+                            .font(.headline)
+                        HStack(spacing: 10) {
+                            Button {
+                                lockButtonTapped(f)
+                            } label: {
+                                Label(fixedFaces.contains(f) ? "Unlock this face" : "Lock this face",
+                                      systemImage: "lock.fill")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            Button {
+                                loadButtonTapped(f)
+                            } label: {
+                                Label(loadedFaces.contains(f) ? "Edit its load" : "Put a load on this face",
+                                      systemImage: "arrow.down.circle.fill")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            Button {
+                                clearFace(f)
+                            } label: {
+                                Label("Clear", systemImage: "xmark.circle")
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Text("Tap a face in the view — then lock it or put a load on it here.")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
 
                 if femResult != nil {
                     legend
@@ -422,7 +495,7 @@ struct FemPanelView: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
-                        Picker("Tap mode", selection: $mode) {
+                        Picker("Tap does", selection: $mode) {
                             ForEach(PickMode.allCases, id: \.self) { m in
                                 Text(m.rawValue).tag(m)
                             }
@@ -453,8 +526,9 @@ struct FemPanelView: View {
                                 .font(.headline)
                             ForEach(loadedFaces.sorted(), id: \.self) { f in
                                 Button {
+                                    highlightFace(f)
                                     selectedLoadFace = f
-                                    statusText = "Face \(f) selected — the Force controls below edit THIS face."
+                                    statusText = "Face \(f) selected (yellow) — the Force controls below edit THIS face."
                                     isError = false
                                 } label: {
                                     HStack {
@@ -610,7 +684,7 @@ struct FemPanelView: View {
             let t = try BodyTess(shape: handle)
             tess = t
             refreshScene()
-            statusText = "Tap faces in the view to fix or load them. \(t.faceCount) faces."
+            statusText = "Tap a face to select it, then lock it or load it with the buttons under the view. \(t.faceCount) faces."
             isError = false
         } catch let CascadeEngine.EngineError.occt(message) {
             statusText = "OCCT error: \(message)"
@@ -638,54 +712,135 @@ struct FemPanelView: View {
         applyAllFaceColors()
     }
 
-    private func tapFace(_ face: Int) {
-        switch mode {
+    /// What a face currently is, in words — shown in the action
+    /// row and the status line so state is never a guess.
+    private func faceStateText(_ f: Int) -> String {
+        if fixedFaces.contains(f) { return "locked (fixed)" }
+        if loadedFaces.contains(f) {
+            return "loaded — \(fmt(faceForces[f] ?? lastForceN)) N, \((facePush[f] ?? defaultPushIn) ? "Push in" : "Pull out")"
+        }
+        return "not locked or loaded"
+    }
+
+    /// Selection: remember the face; repaint the previously
+    /// selected face back to its state colour and the new one
+    /// yellow. In-place material mutation only — no rebuilds.
+    private func highlightFace(_ f: Int) {
+        let old = selectedFace
+        selectedFace = f
+        if let old, old != f { applyFaceColor(old) }
+        applyFaceColor(f)
+    }
+
+    /// The tap entry point. `tapMode` arrives as a VALUE from the
+    /// PickableView coordinator (see PickableView's comment for
+    /// the stale-state bug this replaces) — this function never
+    /// reads the picker's @State to decide what a tap means.
+    /// Selection always happens first and is always visible; the
+    /// shortcut modes then apply their action on top.
+    private func handleTap(face: Int, mode tapMode: PickMode) {
+        highlightFace(face)
+        switch tapMode {
+        case .select:
+            statusText = "Face \(face) selected — \(faceStateText(face)). Use the buttons under the view to lock it or load it."
         case .fix:
-            if fixedFaces.contains(face) {
-                fixedFaces.remove(face)
-                statusText = "Face \(face) unfixed."
-            } else {
-                // A face is either fixed or loaded, never both:
-                // fixing a loaded face MOVES it, and says so.
-                let wasLoaded = loadedFaces.contains(face)
-                fixedFaces.insert(face)
-                if wasLoaded { removeLoad(face) }
-                statusText = wasLoaded
-                    ? "Face \(face) was loaded — moved to Fixed (its load is removed)."
-                    : "Face \(face) fixed (blue)."
-            }
+            toggleFix(face)
         case .load:
-            if loadedFaces.contains(face) {
-                if selectedLoadFace == face {
-                    removeLoad(face)
-                    statusText = "Face \(face) unloaded."
-                } else {
-                    // Tapping a loaded face SELECTS it: the Force
-                    // and Direction controls now edit this face's
-                    // own values. (It used to just unload, which
-                    // made per-face editing impossible.)
-                    selectedLoadFace = face
-                    statusText = "Face \(face) selected — Force controls edit this face (\(fmt(faceForces[face] ?? lastForceN)) N, \((facePush[face] ?? defaultPushIn) ? "Push in" : "Pull out")). Tap it again to unload."
-                }
-            } else {
-                let wasFixed = fixedFaces.contains(face)
-                fixedFaces.remove(face)
-                loadedFaces.insert(face)
-                faceForces[face] = lastForceN
-                facePush[face] = defaultPushIn
-                selectedLoadFace = face
-                statusText = wasFixed
-                    ? "Face \(face) was fixed — moved to Loaded (\(fmt(lastForceN)) N). Force controls edit it now."
-                    : "Face \(face) loaded (orange) — \(fmt(lastForceN)) N. Force controls edit it now."
-            }
+            loadTap(face)
         }
         isError = false
-        // Recolour ONLY the tapped face's material, in place, in
-        // the already-displayed scene — no geometry rebuild, no
-        // scene swap. (The old path rebuilt the entire scene —
-        // hundreds of elements and materials — on every tap,
-        // which is what made picking feel janky.)
         applyFaceColor(face)
+    }
+
+    /// Fix-mode shortcut / lock toggle for one face.
+    private func toggleFix(_ face: Int) {
+        if fixedFaces.contains(face) {
+            fixedFaces.remove(face)
+            statusText = "Face \(face) unlocked."
+        } else {
+            // A face is either fixed or loaded, never both:
+            // fixing a loaded face MOVES it, and says so.
+            let wasLoaded = loadedFaces.contains(face)
+            fixedFaces.insert(face)
+            if wasLoaded { removeLoad(face) }
+            statusText = wasLoaded
+                ? "Face \(face) was loaded — moved to Locked (its load is removed)."
+                : "Face \(face) locked (fixed, blue)."
+        }
+    }
+
+    /// Load-mode shortcut for one face: a fresh face gets a load
+    /// (and becomes the force-editing selection); an already
+    /// loaded face is selected for editing; tapping the selected
+    /// loaded face again unloads it.
+    private func loadTap(_ face: Int) {
+        if loadedFaces.contains(face) {
+            if selectedLoadFace == face {
+                removeLoad(face)
+                statusText = "Face \(face) unloaded."
+            } else {
+                selectedLoadFace = face
+                statusText = "Face \(face) selected — Force controls edit this face (\(faceStateText(face))). Tap it again to unload."
+            }
+        } else {
+            let wasFixed = fixedFaces.contains(face)
+            fixedFaces.remove(face)
+            loadedFaces.insert(face)
+            faceForces[face] = lastForceN
+            facePush[face] = defaultPushIn
+            selectedLoadFace = face
+            statusText = wasFixed
+                ? "Face \(face) was locked — moved to Loaded (\(fmt(lastForceN)) N). Force controls edit it now."
+                : "Face \(face) loaded (orange) — \(fmt(lastForceN)) N. Force controls edit it now."
+        }
+    }
+
+    // MARK: selected-face action row
+
+    private func lockButtonTapped(_ f: Int) {
+        if fixedFaces.contains(f) {
+            fixedFaces.remove(f)
+            statusText = "Face \(f) unlocked."
+        } else {
+            let wasLoaded = loadedFaces.contains(f)
+            fixedFaces.insert(f)
+            if wasLoaded { removeLoad(f) }
+            statusText = wasLoaded
+                ? "Face \(f) was loaded — moved to Locked (its load is removed)."
+                : "Face \(f) locked (fixed)."
+        }
+        isError = false
+        applyFaceColor(f)
+    }
+
+    private func loadButtonTapped(_ f: Int) {
+        if loadedFaces.contains(f) {
+            selectedLoadFace = f
+            statusText = "Face \(f) is loaded — the Force controls below edit its \(fmt(faceForces[f] ?? lastForceN)) N."
+        } else {
+            let wasFixed = fixedFaces.contains(f)
+            fixedFaces.remove(f)
+            loadedFaces.insert(f)
+            faceForces[f] = lastForceN
+            facePush[f] = defaultPushIn
+            selectedLoadFace = f
+            statusText = wasFixed
+                ? "Face \(f) was locked — moved to Loaded (\(fmt(lastForceN)) N). Force controls below edit it."
+                : "Face \(f) loaded — \(fmt(lastForceN)) N. Force controls below edit it."
+        }
+        isError = false
+        applyFaceColor(f)
+    }
+
+    private func clearFace(_ f: Int) {
+        let had = fixedFaces.contains(f) || loadedFaces.contains(f)
+        fixedFaces.remove(f)
+        removeLoad(f)
+        statusText = had
+            ? "Face \(f) cleared — neither locked nor loaded."
+            : "Face \(f) has nothing to clear."
+        isError = false
+        applyFaceColor(f)
     }
 
     private func buildMesh() {
@@ -739,12 +894,12 @@ struct FemPanelView: View {
             return
         }
         guard !fixedFaces.isEmpty else {
-            statusText = "Fix at least one face to run — switch to Fix faces and tap a face."
+            statusText = "Fix at least one face to run — tap a face, then tap Lock this face."
             isError = true
             return
         }
         guard !loadedFaces.isEmpty else {
-            statusText = "Put a load on at least one face to run — switch to Load faces and tap a face."
+            statusText = "Put a load on at least one face to run — tap a face, then tap Put a load on this face."
             isError = true
             return
         }
@@ -875,11 +1030,16 @@ struct FemPanelView: View {
         selectionMaterials = built.materials
     }
 
-    /// The one place selection colours are decided: fixed = blue,
-    /// loaded = orange, otherwise the face's base colour — its
-    /// STEP colour when the import carried one, else the standard
-    /// body gray.
+    /// The one place selection colours are decided: selected =
+    /// yellow (brightest, wins over everything — the action row's
+    /// state line says what the face is while it's selected),
+    /// fixed = blue, loaded = orange, otherwise the face's base
+    /// colour — its STEP colour when the import carried one, else
+    /// the standard body gray.
     private func displayColor(forFace f: Int, tess t: BodyTess) -> UIColor {
+        if f == selectedFace {
+            return UIColor(red: 1.0, green: 0.85, blue: 0.1, alpha: 1.0)
+        }
         if fixedFaces.contains(f) {
             return UIColor(red: 0.2, green: 0.45, blue: 1.0, alpha: 1.0)
         }
