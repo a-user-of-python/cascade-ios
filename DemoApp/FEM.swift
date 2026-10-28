@@ -302,8 +302,20 @@ struct FemPanelView: View {
     @State private var mode: PickMode = .fix
     @State private var fixedFaces: Set<Int> = []
     @State private var loadedFaces: Set<Int> = []
-    @State private var forceN: Double = 1000
-    @State private var pushIn = true
+    /// Per-face load data: every loaded face carries its OWN force
+    /// (N) and direction. The façade has always taken a force per
+    /// load entry (mc_fem_solve's loadForces[i]); the panel used
+    /// to pass one global value for every face, which is why loads
+    /// felt like they weren't landing per face.
+    @State private var faceForces: [Int: Double] = [:]
+    @State private var facePush: [Int: Bool] = [:]
+    /// The loaded face the Force/Direction controls are editing.
+    /// Tapping a loaded face selects it; tapping it again unloads.
+    @State private var selectedLoadFace: Int?
+    /// What a NEW load gets: the last force/direction the user set
+    /// anywhere (initial defaults: 1000 N, push in).
+    @State private var lastForceN: Double = 1000
+    @State private var defaultPushIn = true
     @State private var material: MaterialPreset = .steel
     @State private var meshSize: MeshSize = .medium
     @State private var femMesh: FemMeshData?
@@ -312,6 +324,45 @@ struct FemPanelView: View {
     @State private var isError = false
     @State private var busy = false
     @State private var driftText: String?
+
+    /// Sum of the per-face forces over the loaded faces.
+    private var totalForceN: Double {
+        loadedFaces.reduce(0) { $0 + (faceForces[$1] ?? lastForceN) }
+    }
+
+    /// The Force controls edit the SELECTED loaded face's own
+    /// force; with nothing selected they set the force the next
+    /// load will get. Either way the value becomes the last-used
+    /// force, so a new load defaults to it.
+    private var forceBinding: Binding<Double> {
+        Binding(
+            get: {
+                if let f = selectedLoadFace {
+                    return faceForces[f] ?? lastForceN
+                }
+                return lastForceN
+            },
+            set: { v in
+                lastForceN = v
+                if let f = selectedLoadFace { faceForces[f] = v }
+            })
+    }
+
+    /// Same idea for direction: edits the selected face's own
+    /// push/pull, else the default for the next load.
+    private var pushBinding: Binding<Bool> {
+        Binding(
+            get: {
+                if let f = selectedLoadFace {
+                    return facePush[f] ?? defaultPushIn
+                }
+                return defaultPushIn
+            },
+            set: { v in
+                defaultPushIn = v
+                if let f = selectedLoadFace { facePush[f] = v }
+            })
+    }
 
     var body: some View {
         // Layout contract (this is the fix for the panel Sean hit,
@@ -363,6 +414,12 @@ struct FemPanelView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .lineLimit(3)
 
+                // Always-visible setup summary — fixed/load state
+                // and the total force, readable without scrolling.
+                Text("Fixed: \(fixedFaces.count) faces · Loaded: \(loadedFaces.count) faces — total force \(fmt(totalForceN)) N")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
                         Picker("Tap mode", selection: $mode) {
@@ -372,32 +429,65 @@ struct FemPanelView: View {
                         }
                         .pickerStyle(.segmented)
 
-                        HStack {
-                            Text("Fixed: \(faceList(fixedFaces))")
-                            Spacer()
-                            Text("Loaded: \(faceList(loadedFaces))")
-                        }
-                        .font(.headline)
+                        Text("Fixed faces: \(faceList(fixedFaces))")
+                            .font(.headline)
                         if !fixedFaces.isEmpty || !loadedFaces.isEmpty {
-                            Button("Clear faces") {
-                                fixedFaces.removeAll()
-                                loadedFaces.removeAll()
-                                applyAllFaceColors()
+                            HStack(spacing: 10) {
+                                if !fixedFaces.isEmpty {
+                                    Button("Clear fixed") {
+                                        fixedFaces.removeAll()
+                                        applyAllFaceColors()
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                                if !loadedFaces.isEmpty {
+                                    Button("Clear loads") {
+                                        clearLoads()
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
                             }
-                            .buttonStyle(.bordered)
+                        }
+                        if !loadedFaces.isEmpty {
+                            Text("Loaded faces — tap one to edit its force:")
+                                .font(.headline)
+                            ForEach(loadedFaces.sorted(), id: \.self) { f in
+                                Button {
+                                    selectedLoadFace = f
+                                    statusText = "Face \(f) selected — the Force controls below edit THIS face."
+                                    isError = false
+                                } label: {
+                                    HStack {
+                                        Text("Face \(f) — \(fmt(faceForces[f] ?? lastForceN)) N, \((facePush[f] ?? defaultPushIn) ? "Push in" : "Pull out")")
+                                        Spacer()
+                                        if selectedLoadFace == f {
+                                            Text("editing")
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(selectedLoadFace == f ? .orange : nil)
+                            }
                         }
 
+                        if let f = selectedLoadFace {
+                            Text("Force on Face \(f) — this face only")
+                                .font(.headline)
+                        } else {
+                            Text("Force for the next face you load")
+                                .font(.headline)
+                        }
                         HStack(spacing: 12) {
-                            Text("Force per loaded face").font(.headline)
-                            TextField("N", value: $forceN, format: .number)
+                            TextField("N", value: forceBinding, format: .number)
                                 .textFieldStyle(.roundedBorder)
                                 .keyboardType(.decimalPad)
                                 .frame(width: 110)
                             Text("N").font(.headline)
-                            Stepper("", value: $forceN, in: 1 ... 1_000_000, step: 100)
+                            Stepper("", value: forceBinding, in: 1 ... 1_000_000, step: 100)
                                 .labelsHidden()
                         }
-                        Picker("Direction", selection: $pushIn) {
+                        Picker("Direction", selection: pushBinding) {
                             Text("Push in").tag(true)
                             Text("Pull out").tag(false)
                         }
@@ -431,7 +521,7 @@ struct FemPanelView: View {
                                 Label("Solve", systemImage: "play.fill")
                             }
                             .buttonStyle(.borderedProminent)
-                            .disabled(busy || femMesh == nil || fixedFaces.isEmpty || loadedFaces.isEmpty)
+                            .disabled(busy)
                             Button {
                                 resetResults()
                             } label: {
@@ -439,6 +529,20 @@ struct FemPanelView: View {
                             }
                             .buttonStyle(.bordered)
                             .disabled(busy || femResult == nil)
+                        }
+
+                        // Why Solve can't run yet, said out loud —
+                        // the button itself stays tappable (solve()
+                        // repeats the same reason in the status
+                        // line) instead of silently greying out.
+                        if fixedFaces.isEmpty {
+                            Text("Fix at least one face to run.")
+                                .font(.headline)
+                                .foregroundStyle(.orange)
+                        } else if loadedFaces.isEmpty {
+                            Text("Put a load on at least one face to run.")
+                                .font(.headline)
+                                .foregroundStyle(.orange)
                         }
 
                         if let mesh = femMesh {
@@ -517,24 +621,63 @@ struct FemPanelView: View {
         }
     }
 
+    /// Drop a face's load entirely (set + its per-face data +
+    /// selection), keeping the three in sync.
+    private func removeLoad(_ face: Int) {
+        loadedFaces.remove(face)
+        faceForces.removeValue(forKey: face)
+        facePush.removeValue(forKey: face)
+        if selectedLoadFace == face { selectedLoadFace = nil }
+    }
+
+    private func clearLoads() {
+        loadedFaces.removeAll()
+        faceForces.removeAll()
+        facePush.removeAll()
+        selectedLoadFace = nil
+        applyAllFaceColors()
+    }
+
     private func tapFace(_ face: Int) {
         switch mode {
         case .fix:
             if fixedFaces.contains(face) {
                 fixedFaces.remove(face)
+                statusText = "Face \(face) unfixed."
             } else {
+                // A face is either fixed or loaded, never both:
+                // fixing a loaded face MOVES it, and says so.
+                let wasLoaded = loadedFaces.contains(face)
                 fixedFaces.insert(face)
-                loadedFaces.remove(face)
+                if wasLoaded { removeLoad(face) }
+                statusText = wasLoaded
+                    ? "Face \(face) was loaded — moved to Fixed (its load is removed)."
+                    : "Face \(face) fixed (blue)."
             }
-            statusText = "Face \(face) \(fixedFaces.contains(face) ? "fixed (blue)" : "unfixed")."
         case .load:
             if loadedFaces.contains(face) {
-                loadedFaces.remove(face)
+                if selectedLoadFace == face {
+                    removeLoad(face)
+                    statusText = "Face \(face) unloaded."
+                } else {
+                    // Tapping a loaded face SELECTS it: the Force
+                    // and Direction controls now edit this face's
+                    // own values. (It used to just unload, which
+                    // made per-face editing impossible.)
+                    selectedLoadFace = face
+                    statusText = "Face \(face) selected — Force controls edit this face (\(fmt(faceForces[face] ?? lastForceN)) N, \((facePush[face] ?? defaultPushIn) ? "Push in" : "Pull out")). Tap it again to unload."
+                }
             } else {
-                loadedFaces.insert(face)
+                let wasFixed = fixedFaces.contains(face)
                 fixedFaces.remove(face)
+                loadedFaces.insert(face)
+                faceForces[face] = lastForceN
+                facePush[face] = defaultPushIn
+                selectedLoadFace = face
+                statusText = wasFixed
+                    ? "Face \(face) was fixed — moved to Loaded (\(fmt(lastForceN)) N). Force controls edit it now."
+                    : "Face \(face) loaded (orange) — \(fmt(lastForceN)) N. Force controls edit it now."
             }
-            statusText = "Face \(face) \(loadedFaces.contains(face) ? "loaded (orange)" : "unloaded")."
         }
         isError = false
         // Recolour ONLY the tapped face's material, in place, in
@@ -588,13 +731,36 @@ struct FemPanelView: View {
     }
 
     private func solve() {
+        // Gating with the reason said out loud — Solve stays
+        // tappable precisely so this message is always reachable.
+        guard femMesh != nil else {
+            statusText = "Mesh the part first — tap Mesh, then Solve."
+            isError = true
+            return
+        }
+        guard !fixedFaces.isEmpty else {
+            statusText = "Fix at least one face to run — switch to Fix faces and tap a face."
+            isError = true
+            return
+        }
+        guard !loadedFaces.isEmpty else {
+            statusText = "Put a load on at least one face to run — switch to Load faces and tap a face."
+            isError = true
+            return
+        }
         guard let mesh = femMesh, let handle = currentBody.handle else { return }
         busy = true
         statusText = "Solving…"
         let fixed = fixedFaces
         let loaded = loadedFaces
-        let force = forceN
-        let push = pushIn
+        // Per-face snapshot, taken NOW: each loaded face's own
+        // force and direction. A force edited after meshing is
+        // exactly the force this solve uses — nothing is captured
+        // at mesh time.
+        let forces = faceForces
+        let pushes = facePush
+        let fallbackForce = lastForceN
+        let fallbackPush = defaultPushIn
         let mat = material
         let bbox = tess?.bbox ?? [0, 0, 0, 0, 0, 0]
         DispatchQueue.global(qos: .userInitiated).async {
@@ -605,13 +771,18 @@ struct FemPanelView: View {
                 for f in fixed {
                     for n in try mesh.nodesOnFace(f) { fixedSet.insert(n) }
                 }
-                // Loads: total force per face along the face normal
-                // (push = -normal, into the part; pull = +normal).
+                // Loads: EVERY loaded face, each with its OWN
+                // total force along its own direction (push =
+                // -normal, into the part; pull = +normal).
                 // Non-planar faces use centre-outward direction.
                 var loads: [(face: Int32, force: Double, dir: [Double])] = []
-                for f in loaded {
-                    let dir = try loadDirection(shape: handle, face: f, push: push, bbox: bbox)
-                    loads.append((face: Int32(f), force: force, dir: dir))
+                for f in loaded.sorted() {
+                    let dir = try loadDirection(shape: handle, face: f,
+                                                 push: pushes[f] ?? fallbackPush,
+                                                 bbox: bbox)
+                    loads.append((face: Int32(f),
+                                  force: forces[f] ?? fallbackForce,
+                                  dir: dir))
                 }
                 let result = try FemResultData(
                     mesh: mesh, e: mat.e, nu: mat.nu,
