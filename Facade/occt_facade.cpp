@@ -36,6 +36,8 @@
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
+#include <BRepBuilderAPI_GTransform.hxx>
+#include <BRepOffsetAPI_DraftAngle.hxx>
 #include <BRepOffsetAPI_MakePipe.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
@@ -45,6 +47,7 @@
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
+#include <BRepPrimAPI_MakeTorus.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GC_MakeArcOfCircle.hxx>
@@ -85,6 +88,7 @@
 #include <gp_Ax3.hxx>
 #include <gp_Circ.hxx>
 #include <gp_Dir.hxx>
+#include <gp_GTrsf.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Trsf.hxx>
@@ -790,6 +794,17 @@ MCFacadeShape* mc_cone(double r1, double r2, double h, int* err) {
   }
 }
 
+MCFacadeShape* mc_torus(double ringRadius, double tubeRadius, int* err) {
+  try {
+    BRepPrimAPI_MakeTorus mk(ringRadius, tubeRadius);
+    mk.Build();
+    return wrap(mk.Shape(), err);
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_torus", e);
+    return nullptr;
+  }
+}
+
 // ------------------------------------------------------------ profiles
 
 MCFacadeShape* mc_prism(const double* xy, int n, const double origin[3],
@@ -1072,6 +1087,40 @@ MCFacadeShape* mc_intersect(MCFacadeShape* a, MCFacadeShape* b, int* err) {
   return booleanOp<BRepAlgoAPI_Common>(a, b, err, "mc_intersect");
 }
 
+// ------------------------------------------------------------ transforms
+
+MCFacadeShape* mc_transform(MCFacadeShape* s, const double m[12],
+                            int* err) {
+  if (!s || !m) {
+    fail(err, MC_ERR_INVALID_ARG, "null argument");
+    return nullptr;
+  }
+  try {
+    gp_GTrsf g;
+    // gp_GTrsf::SetValue takes 1-based (row, col); the linear part
+    // occupies (1..3, 1..3) and the translation (1..3, 4).
+    for (int r = 0; r < 3; ++r)
+      for (int c = 0; c < 4; ++c) g.SetValue(r + 1, c + 1, m[r * 4 + c]);
+    const double det = m[0] * (m[5] * m[10] - m[6] * m[9]) -
+                       m[1] * (m[4] * m[10] - m[6] * m[8]) +
+                       m[2] * (m[4] * m[9] - m[5] * m[8]);
+    if (std::fabs(det) < 1e-12) {
+      fail(err, MC_ERR_INVALID_ARG, "mc_transform: singular matrix");
+      return nullptr;
+    }
+    BRepBuilderAPI_GTransform mk(shapeOf(s), g, true);
+    mk.Build();
+    if (!mk.IsDone() || mk.Shape().IsNull()) {
+      fail(err, MC_ERR_OCCT, "mc_transform: builder not done");
+      return nullptr;
+    }
+    return wrap(mk.Shape(), err);
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_transform", e);
+    return nullptr;
+  }
+}
+
 // ------------------------------------------------------------ edge ops
 
 MCFacadeShape* mc_fillet(MCFacadeShape* s, double radius,
@@ -1127,6 +1176,67 @@ MCFacadeShape* mc_shell(MCFacadeShape* s, double thickness, int* err) {
 }
 
 // ------------------------------------------------------------ queries
+
+MCFacadeShape* mc_draft(MCFacadeShape* s, const double pullDir[3],
+                        double angleDeg, const double neutralPoint[3],
+                        int* err) {
+  if (!s || !pullDir || !neutralPoint) {
+    fail(err, MC_ERR_INVALID_ARG, "null argument");
+    return nullptr;
+  }
+  try {
+    gp_Dir dir(pullDir[0], pullDir[1], pullDir[2]);
+    gp_Pln neutral(gp_Pnt(neutralPoint[0], neutralPoint[1],
+                          neutralPoint[2]),
+                   dir);
+    const double angle = angleDeg * M_PI / 180.0;
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> faceMap;
+    TopExp::MapShapes(shapeOf(s), TopAbs_FACE, faceMap);
+    BRepOffsetAPI_DraftAngle mk(shapeOf(s));
+    int added = 0;
+    for (int i = 1; i <= faceMap.Extent(); ++i) {
+      TopoDS_Face face = TopoDS::Face(faceMap.FindKey(i));
+      BRepAdaptor_Surface surf(face);
+      const GeomAbs_SurfaceType type = surf.GetType();
+      bool eligible = false;
+      if (type == GeomAbs_Plane) {
+        // A plane whose normal runs along the pull direction is a
+        // cap: it translates with its neighbours, it is not rotated.
+        gp_Dir n = surf.Plane().Axis().Direction();
+        if (face.Orientation() == TopAbs_REVERSED) n.Reverse();
+        eligible = std::fabs(n.Dot(dir)) < 0.999;
+      } else if (type == GeomAbs_Cylinder) {
+        gp_Dir ax = surf.Cylinder().Axis().Direction();
+        eligible = std::fabs(ax.Dot(dir)) > 0.7;
+      } else if (type == GeomAbs_Cone) {
+        gp_Dir ax = surf.Cone().Axis().Direction();
+        eligible = std::fabs(ax.Dot(dir)) > 0.7;
+      }
+      if (!eligible) continue;
+      mk.Add(face, dir, angle, neutral);
+      if (!mk.AddDone()) {
+        fail(err, MC_ERR_OCCT,
+             "mc_draft: a face refused the draft angle");
+        return nullptr;
+      }
+      ++added;
+    }
+    if (added == 0) {
+      fail(err, MC_ERR_OCCT,
+           "mc_draft: no draftable side faces for that pull direction");
+      return nullptr;
+    }
+    mk.Build();
+    if (!mk.IsDone() || mk.Shape().IsNull()) {
+      fail(err, MC_ERR_OCCT, "mc_draft: builder not done");
+      return nullptr;
+    }
+    return wrap(mk.Shape(), err);
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_draft", e);
+    return nullptr;
+  }
+}
 
 double mc_volume(MCFacadeShape* s, int* err) {
   if (!s) {

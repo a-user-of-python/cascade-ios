@@ -124,6 +124,11 @@ MCFacadeShape* mc_cylinder(double r, double h, int* err);
 MCFacadeShape* mc_sphere(double r, int* err);
 /// Cone: base radius r1 at z=0, top radius r2 at z=h, axis +Z.
 MCFacadeShape* mc_cone(double r1, double r2, double h, int* err);
+/// Torus: ring of radius `ringRadius` in the XY plane around the
+/// Z axis (centred on the origin), tube radius `tubeRadius`.
+/// (BRepPrimAPI_MakeTorus — added for the MetalCAD full-OCCT
+/// migration; the kit's torus primitive has the same convention.)
+MCFacadeShape* mc_torus(double ringRadius, double tubeRadius, int* err);
 
 // ============================================================================
 // 3. Profiles
@@ -267,6 +272,37 @@ MCFacadeShape* mc_chamfer(MCFacadeShape* s, double dist,
 /// BRepOffsetAPI_MakeThickSolid: closed hollow solid — the shape
 /// offset inward by `thickness` mm, no faces removed (no openings).
 MCFacadeShape* mc_shell(MCFacadeShape* s, double thickness, int* err);
+
+/// Draft (taper) the shape's side faces for mold release:
+/// BRepOffsetAPI_DraftAngle applied to every planar / cylindrical
+/// / conical face that is not a cap perpendicular to the pull
+/// direction (faces whose normal is parallel to `pullDir` are the
+/// caps and are left alone; they move with their neighbours). The
+/// neutral plane passes through `neutralPoint` perpendicular to
+/// `pullDir`; faces rotate about their intersection with it.
+/// A POSITIVE `angleDeg` narrows the solid on the +pullDir side of
+/// the neutral plane (material removed there), a negative angle
+/// widens it — the convention the kit's draft and tapered extrude
+/// already use. Added for the MetalCAD full-OCCT migration.
+MCFacadeShape* mc_draft(MCFacadeShape* s, const double pullDir[3],
+                        double angleDeg, const double neutralPoint[3],
+                        int* err);
+
+// ============================================================================
+// 6b. Transforms
+// ============================================================================
+
+/// Apply a general linear map + translation: p' = R * p + t, with
+/// `m` holding 12 doubles in row-major order
+/// [r00 r01 r02 tx, r10 r11 r12 ty, r20 r21 r22 tz]. Covers rigid
+/// motion, uniform and non-uniform scale, and mirror (negative
+/// determinant) in one wrapper (gp_GTrsf +
+/// BRepBuilderAPI_GTransform, copy semantics: the input handle is
+/// left unchanged and the result is a new handle). Added for the
+/// MetalCAD full-OCCT migration (patterns, mirror, move/scale,
+/// primitive placement).
+MCFacadeShape* mc_transform(MCFacadeShape* s, const double m[12],
+                            int* err);
 
 // ============================================================================
 // 7. Queries
