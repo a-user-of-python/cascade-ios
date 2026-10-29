@@ -178,6 +178,69 @@ faceted cosmetic threads), TKXMesh (XDE mesh exchange). If a future
 façade operation needs one, add its toolkit and its EXTERNLIB
 closure the same way.
 
+## FreeCAD extension (added 2026-10-29)
+
+The FreeCAD iPad port links a larger OCCT set than the façade:
+its resolved `${OCC_LIBRARIES}` ∪ `${OCC_OCAF_LIBRARIES}` (from a
+configured census of the pinned FreeCAD snapshot against OCCT
+8.0.1, triple-verified) plus the transitive closure under OCCT's
+own link interfaces = **35 toolkits**. Twelve toolkits were added
+additively — nothing staged was removed (TKDE stays: it is on no
+FreeCAD link list but is an OCCT-internal dependency of the DE
+toolkits) — assembled exactly as the original subset: per-package
+`FILES.cmake` lists + inline include files (`.lxx`/`.pxx`/`.gxx`)
+by glob, `GTests` excluded, files copied **unmodified** from the
+official OCCT 8.0.1 release (GitHub `Open-Cascade-SAS/OCCT` tag
+`V8_0_1` codeload tarball,
+`https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/V8_0_1.tar.gz`,
+sha256 `0d6913eae4bcc09a3653ceced6dda1aec11c35a1513d4c06762c9b002092c68a`;
+`adm/cmake/version.cmake` = 8/0/1; every copied file byte-verified
+against that tree):
+
+| Toolkit | Files | Compilable (.cxx/.cpp/.c) | Packages |
+| --- | ---: | ---: | ---: |
+| TKHLR | 227 | 86 | 8 |
+| TKFeat | 96 | 35 | 2 |
+| TKExpress | 137 | 63 | 2 |
+| TKDEIGES | 927 | 460 | 20 |
+| TKDEGLTF | 33 | 8 | 2 |
+| TKDESTL | 14 | 7 | 3 |
+| TKBin | 28 | 13 | 3 |
+| TKBinL | 94 | 42 | 6 |
+| TKVCAF | 22 | 11 | 1 |
+| TKMeshVS | 54 | 22 | 1 |
+| TKV3d | 493 | 203 | 11 |
+| TKRWMesh | 23 | 10 | 1 |
+| **Total added** | **2,148** | **960** | |
+
+**TKService / TKXCAF un-pruning (7 files, same upstream source).**
+An include scan of all twelve new toolkits against the staged
+tree found exactly three missing headers, all in previously
+pruned spots:
+
+- `TKV3d/AIS/AIS_ViewController.cxx` includes
+  `WNT_HIDSpaceMouse.hxx` (TKService's WNT package) and derives
+  from `Aspect_WindowInputListener`, whose `.cxx` was the one
+  file-level prune inside Aspect. Restored: `WNT/WNT_HIDSpaceMouse.hxx`
+  + `WNT/WNT_HIDSpaceMouse.cxx` (the class is platform-independent
+  data parsing; the rest of the WNT window backend stays excluded)
+  and `Aspect/Aspect_WindowInputListener.cxx`.
+- `TKDEGLTF` and `TKRWMesh` use `XCAFPrs_DocumentExplorer` /
+  `XCAFPrs_DocumentNode` (TKXCAF's XCAFPrs package, pruned to
+  base + Style/Texture in the colour phase). Restored:
+  `XCAFPrs_DocumentExplorer.cxx/.hxx`, `XCAFPrs_DocumentNode.hxx`,
+  `XCAFPrs_DocumentIdIterator.hxx` (included by the Explorer's
+  `.cxx`). `XCAFPrs_AISObject` / `XCAFPrs_Driver` stay excluded —
+  viewer machinery nothing in the new set references (verified by
+  the same scan).
+
+The tree is now **35 toolkits, 5,234 compilable sources**
+(`gen_project.py` totals). The Xcode project was regenerated the
+usual way (byte-deterministic generator); the façade and the
+MetalCAD-facing subset are unchanged — this extension is purely
+additive staging for the FreeCAD deps build, which compiles the
+35 toolkits as individual static libraries from this tree.
+
 ## The Linux proof (what was actually run)
 
 Before the Xcode project was generated, the exact shipped subset
