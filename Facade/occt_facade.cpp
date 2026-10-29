@@ -1110,11 +1110,6 @@ MCFacadeShape* mc_transform(MCFacadeShape* s, const double m[12],
     return nullptr;
   }
   try {
-    gp_GTrsf g;
-    // gp_GTrsf::SetValue takes 1-based (row, col); the linear part
-    // occupies (1..3, 1..3) and the translation (1..3, 4).
-    for (int r = 0; r < 3; ++r)
-      for (int c = 0; c < 4; ++c) g.SetValue(r + 1, c + 1, m[r * 4 + c]);
     const double det = m[0] * (m[5] * m[10] - m[6] * m[9]) -
                        m[1] * (m[4] * m[10] - m[6] * m[8]) +
                        m[2] * (m[4] * m[9] - m[5] * m[8]);
@@ -1122,6 +1117,56 @@ MCFacadeShape* mc_transform(MCFacadeShape* s, const double m[12],
       fail(err, MC_ERR_INVALID_ARG, "mc_transform: singular matrix");
       return nullptr;
     }
+    // Similarity fast path (Stage 5): when the linear part's
+    // columns are mutually orthogonal with equal norm — a rigid
+    // motion, a mirror, or a uniform scale — the map is a gp_Trsf,
+    // and BRepBuilderAPI_Transform carries the ANALYTIC surfaces
+    // and curves through it unchanged. BRepBuilderAPI_GTransform
+    // instead converts every surface and curve to BSplines: the
+    // geometry stays right (bounds exact), but volume integration
+    // over the converted curved faces drifts (+0.86% measured on
+    // an r2 cylinder, host probe §13) and line/circle census curve
+    // types are lost (a translated box's edges report "other"),
+    // which breaks downstream measurement parity and edge
+    // finishing. Patterns, mirror and move live on this path;
+    // only maps a Trsf cannot express (non-uniform scale, shear)
+    // take the GTransform path below. (gp_Trsf::SetValues is used
+    // only AFTER the similarity check: on a non-similarity it
+    // would silently orthogonalize the matrix.)
+    {
+      const double c1[3] = {m[0], m[4], m[8]};
+      const double c2[3] = {m[1], m[5], m[9]};
+      const double c3[3] = {m[2], m[6], m[10]};
+      auto dot3 = [](const double a[3], const double b[3]) {
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      };
+      const double n1 = std::sqrt(dot3(c1, c1));
+      const double n2 = std::sqrt(dot3(c2, c2));
+      const double n3 = std::sqrt(dot3(c3, c3));
+      const double nmax = std::max(n1, std::max(n2, n3));
+      const bool similarity =
+          nmax > 0 && std::fabs(n1 - n2) <= 1e-9 * nmax &&
+          std::fabs(n1 - n3) <= 1e-9 * nmax &&
+          std::fabs(dot3(c1, c2)) <= 1e-9 * n1 * n2 &&
+          std::fabs(dot3(c1, c3)) <= 1e-9 * n1 * n3 &&
+          std::fabs(dot3(c2, c3)) <= 1e-9 * n2 * n3;
+      if (similarity) {
+        gp_Trsf t;
+        t.SetValues(m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
+                    m[8], m[9], m[10], m[11]);
+        BRepBuilderAPI_Transform mk(shapeOf(s), t, true);
+        mk.Build();
+        if (mk.IsDone() && !mk.Shape().IsNull()) {
+          return wrap(mk.Shape(), err);
+        }
+        // Not done: fall through to the general path.
+      }
+    }
+    gp_GTrsf g;
+    // gp_GTrsf::SetValue takes 1-based (row, col); the linear part
+    // occupies (1..3, 1..3) and the translation (1..3, 4).
+    for (int r = 0; r < 3; ++r)
+      for (int c = 0; c < 4; ++c) g.SetValue(r + 1, c + 1, m[r * 4 + c]);
     BRepBuilderAPI_GTransform mk(shapeOf(s), g, true);
     mk.Build();
     if (!mk.IsDone() || mk.Shape().IsNull()) {

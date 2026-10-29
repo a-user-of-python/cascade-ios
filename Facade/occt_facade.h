@@ -307,11 +307,18 @@ MCFacadeShape* mc_draft(MCFacadeShape* s, const double pullDir[3],
 /// `m` holding 12 doubles in row-major order
 /// [r00 r01 r02 tx, r10 r11 r12 ty, r20 r21 r22 tz]. Covers rigid
 /// motion, uniform and non-uniform scale, and mirror (negative
-/// determinant) in one wrapper (gp_GTrsf +
-/// BRepBuilderAPI_GTransform, copy semantics: the input handle is
-/// left unchanged and the result is a new handle). Added for the
-/// MetalCAD full-OCCT migration (patterns, mirror, move/scale,
-/// primitive placement).
+/// determinant) in one wrapper (copy semantics: the input handle
+/// is left unchanged and the result is a new handle). Two paths:
+/// a similarity (rigid / mirror / uniform scale) goes through
+/// gp_Trsf + BRepBuilderAPI_Transform, which preserves the
+/// analytic surfaces and curves exactly; anything else
+/// (non-uniform scale, shear) goes through gp_GTrsf +
+/// BRepBuilderAPI_GTransform, which converts surfaces and curves
+/// to BSplines — geometrically faithful (bounds exact) but its
+/// curved-face volume integration drifts (~+0.9% on a cylinder)
+/// and census curve types become "other". Added for the MetalCAD
+/// full-OCCT migration (patterns, mirror, move/scale, primitive
+/// placement); the similarity path arrived with Stage 5.
 MCFacadeShape* mc_transform(MCFacadeShape* s, const double m[12],
                             int* err);
 
