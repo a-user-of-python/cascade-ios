@@ -72,6 +72,8 @@
 #include <NCollection_List.hxx>
 #include <Quantity_Color.hxx>
 #include <STEPCAFControl_Reader.hxx>
+#include <STEPCAFControl_Writer.hxx>
+#include <TDataStd_Name.hxx>
 #include <TDF_Label.hxx>
 #include <TDocStd_Document.hxx>
 #include <TopoDS_Compound.hxx>
@@ -1817,6 +1819,105 @@ int mc_export_step(MCFacadeShape* s, const char* path, int* err) {
     return MC_OK;
   } catch (const Standard_Failure& e) {
     setOcctError(err, "mc_export_step", e);
+    return MC_ERR_OCCT;
+  }
+}
+
+int mc_export_step_bodies(MCFacadeShape* const* shapes, int count,
+                          const char* path, int* err) {
+  if (!shapes || count < 1 || !path || !*path) {
+    return fail(err, MC_ERR_INVALID_ARG, "mc_export_step_bodies: bad argument");
+  }
+  for (int i = 0; i < count; ++i) {
+    if (!shapes[i]) {
+      return fail(err, MC_ERR_INVALID_ARG,
+                  "mc_export_step_bodies: null shape in the list");
+    }
+  }
+  if (count == 1) return mc_export_step(shapes[0], path, err);
+  try {
+    // Representation only: the shapes are gathered into one
+    // compound and written as-is; no geometry is computed.
+    BRep_Builder bb;
+    TopoDS_Compound compound;
+    bb.MakeCompound(compound);
+    for (int i = 0; i < count; ++i) bb.Add(compound, shapeOf(shapes[i]));
+    STEPControl_Writer writer;
+    if (writer.Transfer(compound, STEPControl_AsIs) != IFSelect_RetDone) {
+      return fail(err, MC_ERR_OCCT, "mc_export_step_bodies: transfer failed");
+    }
+    if (writer.Write(path) != IFSelect_RetDone) {
+      return fail(err, MC_ERR_OCCT, "mc_export_step_bodies: write failed");
+    }
+    if (err) *err = MC_OK;
+    return MC_OK;
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_export_step_bodies", e);
+    return MC_ERR_OCCT;
+  }
+}
+
+int mc_export_step_xde(MCFacadeShape* const* shapes, int count,
+                       const double* rgbPerShape, const char* name,
+                       const char* path, int* err) {
+  if (!shapes || count < 1 || !path || !*path) {
+    return fail(err, MC_ERR_INVALID_ARG, "mc_export_step_xde: bad argument");
+  }
+  for (int i = 0; i < count; ++i) {
+    if (!shapes[i]) {
+      return fail(err, MC_ERR_INVALID_ARG,
+                  "mc_export_step_xde: null shape in the list");
+    }
+  }
+  try {
+    // The XDE document is built the same way mc_import_step's
+    // colour pass reads one (a TDocStd_Document created directly,
+    // no application object): every solid of every input becomes
+    // its own labelled free shape carrying the input's colour, so
+    // the import's per-solid colour matching finds it again.
+    Handle(TDocStd_Document) doc = new TDocStd_Document("MDTV-XCAF");
+    Handle(XCAFDoc_ShapeTool) shapeTool =
+        XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+    Handle(XCAFDoc_ColorTool) colorTool =
+        XCAFDoc_DocumentTool::ColorTool(doc->Main());
+    if (shapeTool.IsNull() || colorTool.IsNull()) {
+      return fail(err, MC_ERR_OCCT,
+                  "mc_export_step_xde: XDE tools unavailable");
+    }
+    for (int i = 0; i < count; ++i) {
+      const TopoDS_Shape& shape = shapeOf(shapes[i]);
+      std::vector<TopoDS_Shape> pieces;
+      for (TopExp_Explorer ex(shape, TopAbs_SOLID); ex.More(); ex.Next())
+        pieces.push_back(ex.Current());
+      if (pieces.empty()) pieces.push_back(shape);
+      for (const TopoDS_Shape& piece : pieces) {
+        TDF_Label label = shapeTool->AddShape(piece);
+        if (label.IsNull()) {
+          return fail(err, MC_ERR_OCCT,
+                      "mc_export_step_xde: shape refused by the document");
+        }
+        if (name && *name) {
+          TDataStd_Name::Set(label, TCollection_ExtendedString(name));
+        }
+        if (rgbPerShape) {
+          const Quantity_Color col(rgbPerShape[3 * i], rgbPerShape[3 * i + 1],
+                                   rgbPerShape[3 * i + 2], Quantity_TOC_RGB);
+          colorTool->SetColor(label, col, XCAFDoc_ColorSurf);
+        }
+      }
+    }
+    STEPCAFControl_Writer writer;
+    writer.SetColorMode(rgbPerShape != nullptr);
+    if (!writer.Transfer(doc, STEPControl_AsIs)) {
+      return fail(err, MC_ERR_OCCT, "mc_export_step_xde: transfer failed");
+    }
+    if (writer.Write(path) != IFSelect_RetDone) {
+      return fail(err, MC_ERR_OCCT, "mc_export_step_xde: write failed");
+    }
+    if (err) *err = MC_OK;
+    return MC_OK;
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_export_step_xde", e);
     return MC_ERR_OCCT;
   }
 }

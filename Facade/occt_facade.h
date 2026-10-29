@@ -51,7 +51,9 @@
 //   7. Queries ....................... mc_volume, mc_bbox, mc_contains, ...
 //   8. Selection census .............. mc_shape_counts, mc_face_info, ...
 //   9. Tessellation .................. mc_tessellate, mc_free_mesh
-//  10. Import / export (STEP) ........ mc_import_step, mc_export_step
+//  10. Import / export (STEP) ........ mc_import_step, mc_export_step,
+//                                      mc_export_step_bodies,
+//                                      mc_export_step_xde
 //  11. FEM (mesh + stress analysis) .. mc_fem_mesh, mc_fem_solve, ...
 //  12. Threads ....................... mc_thread
 //
@@ -497,6 +499,38 @@ MCFacadeShape* mc_import_step(const char* path, int* solidCount, int* err);
 /// a shape written and re-imported keeps its volume, bounding box
 /// and solid count (proven by the library's host test suite).
 int mc_export_step(MCFacadeShape* s, const char* path, int* err);
+
+/// Write SEVERAL shapes to one STEP file at `path`: the shapes
+/// are assembled into a single TopoDS_Compound (representation
+/// only — no geometry is computed) and written with the same
+/// STEPControl_Writer settings as mc_export_step. A multi-solid
+/// file written this way re-imports through mc_import_step as one
+/// compound handle whose solidCount is the total number of solids
+/// across all inputs — the symmetric counterpart of the import.
+/// `count` must be >= 1 and every entry non-NULL, otherwise
+/// MC_ERR_INVALID_ARG. With count == 1 this is mc_export_step.
+int mc_export_step_bodies(MCFacadeShape* const* shapes, int count,
+                          const char* path, int* err);
+
+/// Write shapes to a STEP file at `path` through OCCT's XDE
+/// document layer (STEPCAFControl_Writer, colour mode on), so the
+/// file carries a SURFACE COLOUR per solid — the one thing
+/// STEPControl_Writer cannot emit — plus a product name.
+///
+/// Each input shape contributes its solids: every solid becomes
+/// its own labelled free shape in the XDE document (a shape with
+/// no solids is added as-is), labelled `name` (when non-NULL) and
+/// coloured with `rgbPerShape` — 3 doubles (red, green, blue in
+/// 0..1) per INPUT shape, applied to every solid that shape
+/// contributes. `rgbPerShape` may be NULL to write no colours.
+/// A file written this way re-imports through mc_import_step with
+/// its per-face colours readable via mc_shape_face_colors (the
+/// import's colour matching is geometric, so the colour of a
+/// solid lands on that solid's census faces). Returns MC_OK on
+/// success.
+int mc_export_step_xde(MCFacadeShape* const* shapes, int count,
+                       const double* rgbPerShape, const char* name,
+                       const char* path, int* err);
 
 // ============================================================================
 // 11. FEM — voxel mesh + basic stress analysis
