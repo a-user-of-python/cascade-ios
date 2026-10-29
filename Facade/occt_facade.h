@@ -379,6 +379,21 @@ int mc_face_info(MCFacadeShape* s, int faceIndex, double* area,
                  double center[3], double normal[3], int* isPlanar,
                  int* err);
 
+/// The sketch plane of a PLANAR census face: `origin` is the
+/// underlying plane's location (a point ON the plane), `xDir` /
+/// `yDir` are the plane surface's own axes (unit, orthonormal),
+/// chosen so that xDir x yDir is the face's OUTWARD normal (the
+/// same normal `mc_face_info` reports): for a face whose stored
+/// orientation is reversed, `yDir` is negated relative to the
+/// surface's own Y axis. A sketch built on (origin, xDir, yDir)
+/// lies exactly on the face, and extruding it along the outward
+/// normal grows material away from the body. A NON-planar face is
+/// refused with MC_ERR_INVALID_ARG ("face is not planar") — this
+/// function never substitutes a tangent plane. Any output pointer
+/// may be NULL to skip that output.
+int mc_face_plane(MCFacadeShape* s, int faceIndex, double origin[3],
+                  double xDir[3], double yDir[3], int* err);
+
 /// Per-edge info for edge `edgeIndex` (census order): `curveType`
 /// is 0 = line, 1 = circle, 2 = other
 /// (BRepAdaptor_Curve); `length` via BRepGProp::LinearProperties

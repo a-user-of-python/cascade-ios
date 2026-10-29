@@ -1530,6 +1530,54 @@ int mc_face_info(MCFacadeShape* s, int faceIndex, double* area,
   }
 }
 
+int mc_face_plane(MCFacadeShape* s, int faceIndex, double origin[3],
+                  double xDir[3], double yDir[3], int* err) {
+  if (!s) {
+    return fail(err, MC_ERR_INVALID_ARG, "null shape handle");
+  }
+  try {
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> faceMap;
+    TopExp::MapShapes(shapeOf(s), TopAbs_FACE, faceMap);
+    if (faceIndex < 0 || faceIndex >= faceMap.Extent()) {
+      return fail(err, MC_ERR_INVALID_ARG, "face index out of range");
+    }
+    const TopoDS_Face face = TopoDS::Face(faceMap.FindKey(faceIndex + 1));
+    BRepAdaptor_Surface adaptor(face);
+    if (adaptor.GetType() != GeomAbs_Plane) {
+      return fail(err, MC_ERR_INVALID_ARG,
+                  "face is not planar - a sketch plane needs a flat face");
+    }
+    const gp_Pln pln = adaptor.Plane();
+    gp_Dir x = pln.Position().XDirection();
+    gp_Dir y = pln.Position().YDirection();
+    // x x y is the surface axis; flip y when the face's stored
+    // orientation is reversed so xDir x yDir is the OUTWARD normal
+    // (the convention mc_face_info documents for its normal).
+    if (face.Orientation() == TopAbs_REVERSED) y.Reverse();
+    if (origin) {
+      const gp_Pnt o = pln.Location();
+      origin[0] = o.X();
+      origin[1] = o.Y();
+      origin[2] = o.Z();
+    }
+    if (xDir) {
+      xDir[0] = x.X();
+      xDir[1] = x.Y();
+      xDir[2] = x.Z();
+    }
+    if (yDir) {
+      yDir[0] = y.X();
+      yDir[1] = y.Y();
+      yDir[2] = y.Z();
+    }
+    if (err) *err = MC_OK;
+    return MC_OK;
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_face_plane", e);
+    return MC_ERR_OCCT;
+  }
+}
+
 int mc_edge_info(MCFacadeShape* s, int edgeIndex, int* curveType,
                  double* length, double start[3], double end[3],
                  double center[3], double* radius, int* err) {
