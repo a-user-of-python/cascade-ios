@@ -1133,6 +1133,75 @@ MCFacadeShape* mc_chamfer(MCFacadeShape* s, double dist,
   return edgeOp(s, dist, false, edgeIndices, edgeCount, err, "mc_chamfer");
 }
 
+MCFacadeShape* mc_chamfer2(MCFacadeShape* s, double distA, double distB,
+                           const int* edgeIndices, int edgeCount, int* err) {
+  if (!s) {
+    fail(err, MC_ERR_INVALID_ARG, "null shape handle");
+    return nullptr;
+  }
+  if (distA <= 0 || distB <= 0) {
+    fail(err, MC_ERR_INVALID_ARG, "mc_chamfer2: distances must be > 0");
+    return nullptr;
+  }
+  try {
+    const TopoDS_Shape& shape = shapeOf(s);
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> edgeMap;
+    TopExp::MapShapes(shape, TopAbs_EDGE, edgeMap);
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> faceMap;
+    TopExp::MapShapes(shape, TopAbs_FACE, faceMap);
+    NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>,
+                               TopTools_ShapeMapHasher>
+        ancestors;
+    TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, ancestors);
+    std::vector<int> idx;
+    if (edgeIndices && edgeCount > 0) {
+      for (int i = 0; i < edgeCount; ++i) idx.push_back(edgeIndices[i]);
+    } else {
+      for (int i = 0; i < edgeMap.Extent(); ++i) idx.push_back(i);
+    }
+    BRepFilletAPI_MakeChamfer mk(shape);
+    for (int i : idx) {
+      if (i < 0 || i >= edgeMap.Extent()) {
+        fail(err, MC_ERR_INVALID_ARG, "edge index out of range");
+        return nullptr;
+      }
+      const TopoDS_Edge edge = TopoDS::Edge(edgeMap.FindKey(i + 1));
+      const NCollection_List<TopoDS_Shape>& faces =
+          ancestors.FindFromKey(edge);
+      if (faces.Extent() != 2) {
+        fail(err, MC_ERR_OCCT,
+             "mc_chamfer2: edge does not have exactly two adjacent faces");
+        return nullptr;
+      }
+      // Face A = the adjacent face with the lower census index.
+      TopoDS_Face faceA;
+      int best = 0x7fffffff;
+      for (NCollection_List<TopoDS_Shape>::Iterator it(faces); it.More();
+           it.Next()) {
+        const int fi = faceMap.FindIndex(it.Value());
+        if (fi > 0 && fi < best) {
+          best = fi;
+          faceA = TopoDS::Face(it.Value());
+        }
+      }
+      if (best == 0x7fffffff) {
+        fail(err, MC_ERR_OCCT, "mc_chamfer2: adjacent face not in census");
+        return nullptr;
+      }
+      mk.Add(distA, distB, edge, faceA);
+    }
+    mk.Build();
+    if (!mk.IsDone()) {
+      fail(err, MC_ERR_OCCT, "mc_chamfer2: builder not done");
+      return nullptr;
+    }
+    return wrap(mk.Shape(), err);
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_chamfer2", e);
+    return nullptr;
+  }
+}
+
 MCFacadeShape* mc_shell(MCFacadeShape* s, double thickness, int* err) {
   if (!s) {
     fail(err, MC_ERR_INVALID_ARG, "null shape handle");

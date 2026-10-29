@@ -269,6 +269,16 @@ MCFacadeShape* mc_fillet(MCFacadeShape* s, double radius,
 MCFacadeShape* mc_chamfer(MCFacadeShape* s, double dist,
                           const int* edgeIndices, int edgeCount, int* err);
 
+/// BRepFilletAPI_MakeChamfer, two-distance (asymmetric): `distA`
+/// is measured along "face A" of each edge, `distB` along the
+/// other face. Face A is DEFINED as the adjacent face with the
+/// lower census index (the shared face enumeration of section 8)
+/// — a stored document carries no other face reference for an
+/// asymmetric chamfer, so the convention is fixed here and in the
+/// kit. An edge without exactly two adjacent faces fails.
+MCFacadeShape* mc_chamfer2(MCFacadeShape* s, double distA, double distB,
+                           const int* edgeIndices, int edgeCount, int* err);
+
 /// BRepOffsetAPI_MakeThickSolid: closed hollow solid — the shape
 /// offset inward by `thickness` mm, no faces removed (no openings).
 MCFacadeShape* mc_shell(MCFacadeShape* s, double thickness, int* err);
