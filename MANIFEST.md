@@ -168,8 +168,13 @@ ModelingAlgorithms toolkits nothing in the closure needs: TKHLR
 (drawing hidden-line removal — only reachable via the document
 branch), TKFeat (feature recognition helpers), TKExpress (schema
 codegen runtime), TKHelix (OCCT 8's new helical-sweep toolkit —
-not needed: threads in MetalCAD are profile sweeps, which
-`mc_sweep` covers), TKXMesh (XDE mesh exchange). If a future
+not needed: MetalCAD's real threads are built by `mc_thread`
+(façade §12) from an exact surface-curve helix +
+`BRepOffsetAPI_MakePipeShell` in TKOffset, the canonical
+pre-TKHelix construction. Correction of an earlier claim here:
+`mc_sweep` does NOT cover threads — its spine is a polyline and
+its pipe has no auxiliary-spine mode, so it can only make
+faceted cosmetic threads), TKXMesh (XDE mesh exchange). If a future
 façade operation needs one, add its toolkit and its EXTERNLIB
 closure the same way.
 

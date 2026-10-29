@@ -38,7 +38,21 @@
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepOffsetAPI_DraftAngle.hxx>
+#include <BRepBuilderAPI_MakeSolid.hxx>
+#include <BRepLib.hxx>
+#include <BRepBuilderAPI_Sewing.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
 #include <BRepOffsetAPI_MakePipe.hxx>
+#include <BRepOffsetAPI_MakePipeShell.hxx>
+#include <Geom2d_Line.hxx>
+#include <Geom2d_TrimmedCurve.hxx>
+#include <Geom_ConicalSurface.hxx>
+#include <Geom_CylindricalSurface.hxx>
+#include <ShapeFix_Solid.hxx>
+#include <TopoDS_Shell.hxx>
+#include <TopoDS_Solid.hxx>
+#include <gp_Dir2d.hxx>
+#include <gp_Pnt2d.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
@@ -2443,6 +2457,532 @@ void mc_free_shape(MCFacadeShape* s) {
   if (!s) return;
   delete static_cast<ShapeImpl*>(s->_impl);
   delete s;
+}
+
+// ------------------------------------------------------------ threads
+
+namespace {
+
+// Sweep ONE thread profile (a closed polygon given in (r, z))
+// along the exact helix and return the ridge/tool SOLID, not yet
+// trimmed to the segment. The helix is a straight diagonal
+// Geom2d_Line on the cylindrical surface of radius `rRef` — or on
+// a conical surface of the same reference radius when tapered —
+// so the spine is the true helix. `rRef` is the radius of the
+// profile's reference point (its inner-edge centre) at z = 0,
+// which the spine passes through. The sweep runs in
+// BRepOffsetAPI_MakePipeShell's auxiliary-spine mode with the
+// thread axis as the auxiliary spine, keeping every section in
+// its meridional plane (the lathe-generated form).
+//   handSign: +1 right-hand, -1 left-hand.
+//   taperRad: cone semi-angle >= 0; radii shrink toward +Z.
+// The profile's z extent must stay below the lead: a taller
+// profile wraps over itself along the helix and the sweep comes
+// out as a multi-layer shell (measured on the host harness).
+bool threadRidgeSolid(double rRef,
+                      const std::vector<std::pair<double, double>>& prof,
+                      double lead, double handSign, double taperRad,
+                      double zFrom, double zTo, TopoDS_Shape& out,
+                      std::string& why) {
+  const gp_Ax3 ax3(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1), gp_Dir(1, 0, 0));
+  occ::handle<Geom_Surface> surf;
+  if (taperRad > 1e-12) {
+    // Negative semi-angle: the radius shrinks as V (and z) grows.
+    surf = new Geom_ConicalSurface(ax3, -taperRad, rRef);
+  } else {
+    surf = new Geom_CylindricalSurface(ax3, rRef);
+  }
+  // On the surface, u is the angle and z = (lead / 2pi) * handSign
+  // * u; the second surface parameter is v = z / cos(taper). The
+  // line through (0, 0) with direction (handSign * 2pi,
+  // lead / cos(taper)) is the helix. CAREFUL: Geom2d_Line's
+  // parameter is arc length in (u, v) space (gp_Dir2d is a unit
+  // direction), so the trim bounds are z scaled by
+  // |(2pi, lead/cos)| / lead, NOT z / lead.
+  const double cosT = std::cos(taperRad);
+  const double dv = lead / cosT;
+  const double dirNorm = std::sqrt(4 * M_PI * M_PI + dv * dv);
+  occ::handle<Geom2d_Line> line = new Geom2d_Line(
+      gp_Pnt2d(0, 0), gp_Dir2d(handSign * 2 * M_PI, dv));
+  occ::handle<Geom2d_TrimmedCurve> helix = new Geom2d_TrimmedCurve(
+      line, zFrom * dirNorm / lead, zTo * dirNorm / lead);
+  BRepBuilderAPI_MakeEdge mkEdge(helix, surf);
+  if (!mkEdge.IsDone()) {
+    why = "helix edge construction failed";
+    return false;
+  }
+  // The (2D curve, surface) edge carries only a pcurve; the sweep
+  // machinery reads the edge's 3D curve (a null one throws
+  // Standard_NullObject inside BRepFill), so build it from the
+  // pcurve on the surface — the same helix, as a 3D curve.
+  if (!BRepLib::BuildCurve3d(mkEdge.Edge(), 1e-7)) {
+    why = "helix 3D curve construction failed";
+    return false;
+  }
+  BRepBuilderAPI_MakeWire mkWire(mkEdge.Edge());
+  if (!mkWire.IsDone()) {
+    why = "helix wire construction failed";
+    return false;
+  }
+  // Auxiliary spine: the thread axis itself.
+  BRepBuilderAPI_MakePolygon mkAxis;
+  mkAxis.Add(gp_Pnt(0, 0, zFrom));
+  mkAxis.Add(gp_Pnt(0, 0, zTo));
+  if (!mkAxis.IsDone()) {
+    why = "axis wire construction failed";
+    return false;
+  }
+  // Profile: the trapezoid in the meridional half-plane y = 0.
+  BRepBuilderAPI_MakePolygon mkProf;
+  for (const auto& c : prof) mkProf.Add(gp_Pnt(c.first, 0, c.second));
+  mkProf.Close();
+  if (!mkProf.IsDone()) {
+    why = "thread profile construction failed";
+    return false;
+  }
+  BRepOffsetAPI_MakePipeShell mk(mkWire.Wire());
+  mk.SetMode(mkAxis.Wire(), Standard_True, BRepFill_NoContact);
+  mk.Add(mkProf.Wire());
+  mk.Build();
+  if (!mk.IsDone()) {
+    why = "thread sweep did not complete";
+    return false;
+  }
+  if (mk.MakeSolid()) {
+    out = mk.Shape();
+    return true;
+  }
+  // Fallback: cap the swept shell with the sweep's own end faces
+  // and sew them into a solid.
+  const TopoDS_Shape first = mk.FirstShape();
+  const TopoDS_Shape last = mk.LastShape();
+  if (!first.IsNull() && !last.IsNull()) {
+    BRepBuilderAPI_Sewing sew(1e-6, Standard_True, Standard_True,
+                              Standard_True, Standard_False);
+    sew.Add(mk.Shape());
+    sew.Add(first);
+    sew.Add(last);
+    sew.Perform();
+    const TopoDS_Shape sewn = sew.SewedShape();
+    if (!sewn.IsNull() && sewn.ShapeType() == TopAbs_SHELL) {
+      BRepBuilderAPI_MakeSolid ms(TopoDS::Shell(sewn));
+      if (ms.IsDone()) {
+        ShapeFix_Solid fix(ms.Solid());
+        out = fix.Solid();
+        return true;
+      }
+    }
+  }
+  why = "thread sweep produced a shell that could not be closed";
+  return false;
+}
+
+// BOP helper local to mc_thread (the file's booleanOp works on
+// handles; mc_thread composes raw shapes internally).
+bool threadFuse(const TopoDS_Shape& a, const TopoDS_Shape& b,
+                TopoDS_Shape& out, const char* what, std::string& why) {
+  BRepAlgoAPI_Fuse mk(a, b);
+  mk.Build();
+  if (!mk.IsDone()) {
+    why = std::string(what) + ": builder not done";
+    return false;
+  }
+  out = mk.Shape();
+  return true;
+}
+
+}  // namespace
+
+MCFacadeShape* mc_thread(double majorDiameter, double pitch, double depth,
+                         double profileAngleDeg, int starts, int isInternal,
+                         int isLeftHanded, double taperDeg, double clearance,
+                         double length, int* err) {
+  auto bad = [&](const std::string& m) {
+    fail(err, MC_ERR_INVALID_ARG, "mc_thread: " + m);
+    return nullptr;
+  };
+  if (!(majorDiameter > 0)) return bad("major diameter must be positive");
+  if (!(pitch > 0) || pitch >= majorDiameter)
+    return bad("pitch must be positive and smaller than the major diameter");
+  if (!(depth > 0) || depth >= majorDiameter / 2)
+    return bad("depth must be positive and less than half the major "
+               "diameter — the thread would cut through its own core");
+  if (starts < 1 || starts > 4) return bad("starts must be between 1 and 4");
+  if (!(profileAngleDeg >= 5 && profileAngleDeg <= 175))
+    return bad("profile angle must be between 5 and 175 degrees");
+  if (!(length > 0)) return bad("length must be positive");
+  if (!(taperDeg >= 0 && taperDeg < 10))
+    return bad("taper must be between 0 and 10 degrees");
+  if (std::fabs(clearance) > pitch / 4)
+    return bad("clearance must be within a quarter of the pitch");
+  const double R = majorDiameter / 2;
+  const double Rroot = R - depth;
+  const double taperRad = taperDeg * M_PI / 180.0;
+  if (taperDeg > 0) {
+    const double endMajor = majorDiameter - 2 * std::tan(taperRad) * length;
+    if (!(endMajor > majorDiameter - 2 * depth))
+      return bad("the taper closes the thread within its length — reduce "
+                 "the taper or the length");
+    // The core is built over the sweep's over-travel span (see
+    // below); the taper must not close it inside that span either.
+    if (!(Rroot - std::tan(taperRad) * (length + 0.6 * pitch * starts) >
+          0.02))
+      return bad("the taper closes the thread's core just past its end "
+                 "— reduce the taper or the length");
+  }
+  try {
+    const double lead = pitch * starts;
+    const double handSign = isLeftHanded ? -1.0 : 1.0;
+    // Over-sweep past both ends; the slab trim below sets the
+    // exact segment, so the sweep's own end faces never survive.
+    const double over = 0.6 * lead;
+    const double zFrom = -over, zTo = length + over;
+    std::string why;
+    TopoDS_Shape fused;
+    if (!isInternal) {
+      // ==========================================================
+      // External thread. OCCT's boolean classifier is unreliable
+      // against these helicoid solids in a way that depends on
+      // the exact pitch/lead/span combination (host-harness
+      // measured: the same fuse that is exact at lead 1.5 returns
+      // the ridge alone at lead 3.0, and vice versa when the core
+      // span changes). So the segment is built by a VERIFIED
+      // FALLBACK CHAIN: several constructions are tried in order
+      // and each candidate is checked — volume inside the
+      // (core, blank) bounds, centre inside, a ridge witness
+      // point inside and a groove witness point outside — before
+      // it is accepted. If none verifies, the call fails with a
+      // coded error instead of returning a bogus solid.
+      // ==========================================================
+      const double tanT = std::tan(taperRad);
+      auto radiusAt = [&](double r0, double z) { return r0 - tanT * z; };
+      // Cylinder (or cone when tapered) of radius r0 at z = 0,
+      // spanning [z0, z1]. Null when a radius collapses.
+      auto cylOrCone = [&](double r0, double z0, double z1) -> TopoDS_Shape {
+        const double ra = radiusAt(r0, z0), rb = radiusAt(r0, z1);
+        if (!(ra > 0.01) || !(rb > 0.01)) return TopoDS_Shape();
+        if (taperRad > 1e-12) {
+          BRepPrimAPI_MakeCone mk(gp_Ax2(gp_Pnt(0, 0, z0), gp_Dir(0, 0, 1)),
+                                  ra, rb, z1 - z0);
+          mk.Build();
+          return mk.IsDone() ? mk.Shape() : TopoDS_Shape();
+        }
+        BRepPrimAPI_MakeCylinder mk(gp_Ax2(gp_Pnt(0, 0, z0), gp_Dir(0, 0, 1)),
+                                    ra, z1 - z0);
+        mk.Build();
+        return mk.IsDone() ? mk.Shape() : TopoDS_Shape();
+      };
+      auto solidVolume = [](const TopoDS_Shape& s) {
+        GProp_GProps props;
+        BRepGProp::VolumeProperties(s, props);
+        return props.Mass();
+      };
+      auto pointState = [](const TopoDS_Shape& s, double x, double y,
+                           double z) {
+        // Load + Perform, exactly like mc_contains: the one-shot
+        // (shape, point, tol) constructor form misclassifies
+        // points on multi-fuse helicoid results (it read a proven
+        // 1-start thread's ridge centre as OUTSIDE while the
+        // Load + Perform form — and GProp box probes — read it
+        // correctly).
+        BRepClass3d_SolidClassifier cl;
+        cl.Load(s);
+        cl.Perform(gp_Pnt(x, y, z), 1e-7);
+        return cl.State();
+      };
+      // Trim a built shape to the exact segment z in [0, length]:
+      // box intersection, with a plain-cylinder intersection as
+      // the alternate if the box path produces nothing.
+      auto trimSegment = [&](const TopoDS_Shape& s) -> TopoDS_Shape {
+        const double ext = R + std::fabs(clearance) + 1;
+        BRepPrimAPI_MakeBox mkBox(gp_Pnt(-ext, -ext, 0),
+                                  gp_Pnt(ext, ext, length));
+        mkBox.Build();
+        if (mkBox.IsDone()) {
+          BRepAlgoAPI_Common com(s, mkBox.Shape());
+          com.Build();
+          if (com.IsDone() && !com.Shape().IsNull() &&
+              solidVolume(com.Shape()) > 0)
+            return com.Shape();
+        }
+        BRepPrimAPI_MakeCylinder mkCyl(ext, length);
+        mkCyl.Build();
+        if (mkCyl.IsDone()) {
+          BRepAlgoAPI_Common com(s, mkCyl.Shape());
+          com.Build();
+          if (com.IsDone() && !com.Shape().IsNull() &&
+              solidVolume(com.Shape()) > 0)
+            return com.Shape();
+        }
+        return TopoDS_Shape();
+      };
+      auto frustumVol = [&](double r0) {
+        const double r1 = radiusAt(r0, length);
+        return M_PI * length / 3.0 * (r0 * r0 + r0 * r1 + r1 * r1);
+      };
+      const double coreVol = frustumVol(Rroot - clearance);
+      const double blankVol = frustumVol(R - clearance);
+      auto verify = [&](const TopoDS_Shape& s) {
+        if (s.IsNull()) return false;
+        bool hasSolid = false;
+        for (TopExp_Explorer e(s, TopAbs_SOLID); e.More(); e.Next()) {
+          hasSolid = true;
+          break;
+        }
+        if (!hasSolid) return false;
+        const double v = solidVolume(s);
+        if (!(v > 0.995 * coreVol && v < 1.001 * blankVol)) return false;
+        if (pointState(s, 0, 0, length / 2) != TopAbs_IN) return false;
+        if (length >= 1.5 * pitch) {
+          // Ridge witness: at theta = 0 the ridge is centred on
+          // every multiple of the pitch; probe mid-depth at the
+          // multiple nearest the middle. Groove witness: half a
+          // pitch away at the same radius must be OUTSIDE.
+          double zStar = std::round((length / 2) / pitch) * pitch;
+          if (zStar < 0.3 * pitch || zStar > length - 0.3 * pitch)
+            zStar = length / 2;
+          const double rMid =
+              radiusAt((Rroot + R) / 2 - clearance, zStar);
+          if (pointState(s, rMid, 0, zStar) != TopAbs_IN) return false;
+          double zGroove = zStar + pitch / 2;
+          if (zGroove > length - 0.2 * pitch) zGroove = zStar - pitch / 2;
+          const double rMidG =
+              radiusAt((Rroot + R) / 2 - clearance, zGroove);
+          if (pointState(s, rMidG, 0, zGroove) == TopAbs_IN) return false;
+        }
+        return true;
+      };
+
+      // Ridge profile: root flat 3/4 pitch at the root radius,
+      // crest flat 1/8 pitch at the major radius (the kit's
+      // trapezoid). The root edge sinks 0.02 into the core so
+      // the fuse never rests on coincident faces; clearance
+      // shrinks every radius.
+      const std::vector<std::pair<double, double>> ridgeProf = {
+          {Rroot - clearance - 0.02, -0.375 * pitch},
+          {R - clearance, -0.0625 * pitch},
+          {R - clearance, 0.0625 * pitch},
+          {Rroot - clearance - 0.02, 0.375 * pitch},
+      };
+      TopoDS_Shape ridge;
+      const bool haveRidge =
+          threadRidgeSolid(Rroot - clearance, ridgeProf, lead, handSign,
+                           taperRad, zFrom, zTo, ridge, why);
+      TopoDS_Shape result;
+      // Attempts 1-2: fuse the ridge(s) onto a core — first the
+      // exact-length core, then the full-span core (each is the
+      // winning configuration for some leads).
+      if (haveRidge) {
+        for (int attempt = 0; attempt < 2 && result.IsNull(); ++attempt) {
+          TopoDS_Shape core = attempt == 0
+                                  ? cylOrCone(Rroot - clearance, 0, length)
+                                  : cylOrCone(Rroot - clearance, zFrom, zTo);
+          if (core.IsNull()) continue;
+          TopoDS_Shape f = core;
+          bool ok = true;
+          for (int k = 0; k < starts && ok; ++k) {
+            TopoDS_Shape rk = ridge;
+            if (k > 0) {
+              gp_Trsf rot;
+              rot.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)),
+                              2 * M_PI * k / starts);
+              BRepBuilderAPI_Transform bt(ridge, rot, Standard_True);
+              bt.Build();
+              if (!bt.IsDone()) { ok = false; break; }
+              rk = bt.Shape();
+            }
+            TopoDS_Shape nf;
+            if (!threadFuse(f, rk, nf, "mc_thread fuse", why)) ok = false;
+            else f = nf;
+          }
+          if (!ok) continue;
+          TopoDS_Shape t = trimSegment(f);
+          if (verify(t)) result = t;
+        }
+      }
+      // Attempts 3-4: cut the groove into a blank at the major
+      // radius — first a full-span blank, then the exact blank.
+      // The groove tool is ONE sweep whose profile carries a
+      // groove trapezoid per start joined by a web OUTSIDE the
+      // blank (the web removes nothing); its z extent stays
+      // under the lead, so the sweep never wraps.
+      if (result.IsNull()) {
+        const double slope = (5 * pitch / 16) / depth;
+        const double sinkIn = std::min(0.05, 0.12 * depth);
+        const double sinkOut = std::min(0.05, 0.16 * depth);
+        const double rA = Rroot - clearance - sinkIn;
+        const double halfA = pitch / 8 - sinkIn * slope;
+        const double rB = R - clearance + sinkOut;
+        const double halfB = 7 * pitch / 16 + sinkOut * slope;
+        const double rWeb = rB + 0.25;
+        std::vector<std::pair<double, double>> combProf;
+        auto pushPt = [&](double r, double z) {
+          if (!combProf.empty() &&
+              std::fabs(combProf.back().first - r) < 1e-9 &&
+              std::fabs(combProf.back().second - z) < 1e-9)
+            return;
+          combProf.push_back({r, z});
+        };
+        pushPt(rB, -halfB);
+        pushPt(rWeb, -halfB);
+        pushPt(rWeb, (starts - 1) * pitch + halfB);
+        pushPt(rB, (starts - 1) * pitch + halfB);
+        for (int k = starts - 1; k >= 0; --k) {
+          const double c = k * pitch;
+          pushPt(rB, c + halfB);
+          pushPt(rA, c + halfA);
+          pushPt(rA, c - halfA);
+          pushPt(rB, c - halfB);
+        }
+        TopoDS_Shape grooveTool;
+        if (halfA > 0.01 &&
+            threadRidgeSolid(Rroot - clearance, combProf, lead, handSign,
+                             taperRad, zFrom, zTo, grooveTool, why)) {
+          for (int attempt = 0; attempt < 2 && result.IsNull(); ++attempt) {
+            TopoDS_Shape blank = attempt == 0
+                                     ? cylOrCone(R - clearance, zFrom, zTo)
+                                     : cylOrCone(R - clearance, 0, length);
+            if (blank.IsNull()) continue;
+            BRepAlgoAPI_Cut cut(blank, grooveTool);
+            cut.Build();
+            if (!cut.IsDone() || cut.Shape().IsNull()) continue;
+            TopoDS_Shape t = trimSegment(cut.Shape());
+            if (verify(t)) result = t;
+          }
+        }
+      }
+      // Attempt 5 (even starts): halves. X = a full-span core
+      // carrying only the EVEN-indexed ridges; Y = X rotated by
+      // one start step (2π/starts); fuse(X, Y) merges across the
+      // coincident cores and interleaves the two ridge sets.
+      // Measured winner for the 4-start reference (lead 6), where
+      // the four sequential ridge fuses rot the topology (the
+      // chain returns two solids whose classifier reads empty)
+      // while the halves fuse returns one valid solid of the
+      // exact volume, confirmed by GProp box probes.
+      if (result.IsNull() && haveRidge && starts % 2 == 0) {
+        TopoDS_Shape core = cylOrCone(Rroot - clearance, zFrom, zTo);
+        if (!core.IsNull()) {
+          TopoDS_Shape X = core;
+          bool ok = true;
+          for (int k = 0; k < starts && ok; k += 2) {
+            TopoDS_Shape rk = ridge;
+            if (k > 0) {
+              gp_Trsf rot;
+              rot.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)),
+                              2 * M_PI * k / starts);
+              BRepBuilderAPI_Transform bt(ridge, rot, Standard_True);
+              bt.Build();
+              if (!bt.IsDone()) { ok = false; break; }
+              rk = bt.Shape();
+            }
+            TopoDS_Shape nf;
+            if (!threadFuse(X, rk, nf, "mc_thread fuse", why)) ok = false;
+            else X = nf;
+          }
+          if (ok) {
+            gp_Trsf step;
+            step.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)),
+                             2 * M_PI / starts);
+            BRepBuilderAPI_Transform bt(X, step, Standard_True);
+            bt.Build();
+            if (bt.IsDone()) {
+              TopoDS_Shape fused;
+              if (threadFuse(X, bt.Shape(), fused, "mc_thread fuse", why)) {
+                TopoDS_Shape t = trimSegment(fused);
+                if (verify(t)) result = t;
+              }
+            }
+          }
+        }
+      }
+      if (result.IsNull()) {
+        fail(err, MC_ERR_OCCT,
+             "mc_thread: the geometry engine could not build this "
+             "thread — its booleans failed on this pitch/lead "
+             "combination; try a different pitch or fewer starts");
+        return nullptr;
+      }
+      return wrap(result, err);
+    } else {
+      // Internal groove tool: the void a mating ridge sweeps
+      // out — 7/8 pitch wide at the minor radius, 1/4 pitch at
+      // the major radius, flanks parallel to the external
+      // ridge's. For multi-start threads the profile carries one
+      // groove trapezoid per start, joined by a thin web along
+      // the inner edge: ONE sweep, no rotated copies and no
+      // fuses (both are unreliable against these helicoid solids
+      // in this OCCT build — measured on the host harness). The
+      // web sits 0.01..0.03 below the bore surface, inside the
+      // bore's void, so it removes no material when the tool is
+      // cut from a bored blank. The whole profile's z extent is
+      // (starts - 1) * pitch + 7/8 pitch < lead, so the sweep
+      // never wraps over itself. Clearance grows every radius.
+      // Single-start tools are the plain trapezoid with a 0.01
+      // sink (the configuration the host harness's nut proof
+      // passes); the web only exists to join multi-start
+      // trapezoids into one profile.
+      const double rOutP = R + clearance;
+      std::vector<std::pair<double, double>> prof;
+      if (starts == 1) {
+        const double rInP = Rroot + clearance - 0.01;
+        prof = {
+            {rInP, -0.4375 * pitch},
+            {rOutP, -0.125 * pitch},
+            {rOutP, 0.125 * pitch},
+            {rInP, 0.4375 * pitch},
+        };
+      } else {
+        const double rInP = Rroot + clearance - 0.03;
+        const double rWeb = rInP + 0.02;
+        auto pushPt = [&](double r, double z) {
+          if (!prof.empty() && std::fabs(prof.back().first - r) < 1e-9 &&
+              std::fabs(prof.back().second - z) < 1e-9)
+            return;
+          prof.push_back({r, z});
+        };
+        const double stripBot = -0.4375 * pitch;
+        const double stripTop =
+            (starts - 1) * pitch + 0.4375 * pitch;
+        pushPt(rInP, stripBot);
+        pushPt(rWeb, stripBot);
+        for (int k = 0; k < starts; ++k) {
+          const double c = k * pitch;
+          pushPt(rWeb, c - 0.4375 * pitch);
+          pushPt(rOutP, c - 0.125 * pitch);
+          pushPt(rOutP, c + 0.125 * pitch);
+          pushPt(rWeb, c + 0.4375 * pitch);
+        }
+        pushPt(rWeb, stripTop);
+        pushPt(rInP, stripTop);
+      }
+      TopoDS_Shape tool;
+      if (!threadRidgeSolid(Rroot + clearance, prof, lead, handSign,
+                            taperRad, zFrom, zTo, tool, why)) {
+        fail(err, MC_ERR_OCCT, "mc_thread: " + why);
+        return nullptr;
+      }
+      fused = tool;
+    }
+    // Trim to the exact segment z in [0, length].
+    const double ext = R + std::fabs(clearance) + 1;
+    BRepPrimAPI_MakeBox mkBox(gp_Pnt(-ext, -ext, 0), gp_Pnt(ext, ext, length));
+    mkBox.Build();
+    if (!mkBox.IsDone()) {
+      fail(err, MC_ERR_OCCT, "mc_thread: trim box did not build");
+      return nullptr;
+    }
+    BRepAlgoAPI_Common mkCommon(fused, mkBox.Shape());
+    mkCommon.Build();
+    if (!mkCommon.IsDone()) {
+      fail(err, MC_ERR_OCCT, "mc_thread: segment trim did not complete");
+      return nullptr;
+    }
+    return wrap(mkCommon.Shape(), err);
+  } catch (const Standard_Failure& e) {
+    setOcctError(err, "mc_thread", e);
+    return nullptr;
+  }
 }
 
 }  // extern "C"

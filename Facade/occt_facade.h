@@ -53,6 +53,7 @@
 //   9. Tessellation .................. mc_tessellate, mc_free_mesh
 //  10. Import / export (STEP) ........ mc_import_step, mc_export_step
 //  11. FEM (mesh + stress analysis) .. mc_fem_mesh, mc_fem_solve, ...
+//  12. Threads ....................... mc_thread
 //
 // Sections 1–10 are the pass-through described above. Section 11
 // (FEM) is the deliberate exception: it is the project's OWN
@@ -632,6 +633,94 @@ int mc_fem_result_node_values(MCFacadeFemResult* r, double* dispOut,
 /// double per element.
 int mc_fem_result_element_von_mises(MCFacadeFemResult* r, double* out,
                                     int* err);
+
+// ============================================================================
+// 12. Threads
+// ============================================================================
+//
+// A REAL helical thread solid, in the canonical placement: axis
+// +Z, base at the origin, segment spanning z in [0, length]. The
+// parameters mirror MetalCAD's ThreadSpec one-to-one, so the kit
+// passes its stored spec straight through:
+//
+//   majorDiameter   crest diameter of an external thread (mm)
+//   pitch           axial distance between adjacent ridges (mm)
+//   depth           radial thread depth (mm); root diameter is
+//                   majorDiameter - 2*depth
+//   profileAngleDeg the spec's nominal profile angle; validated
+//                   (5..175) but see the profile note below
+//   starts          1..4 thread starts (lead = starts * pitch)
+//   isInternal      0 = external segment, != 0 = internal groove
+//                   TOOL (see below)
+//   isLeftHanded    0 = right-hand, != 0 = left-hand
+//   taperDeg        cone taper of the thread axis cone (NPT:
+//                   1.7899); radii shrink toward +Z
+//   clearance       fit offset: an external ridge shrinks radially
+//                   by this, an internal tool grows by it;
+//                   |clearance| <= pitch/4
+//   length          axial length of the segment (mm)
+//
+// Profile: the trapezoid MetalCAD's ThreadSpec defines — in the
+// meridional (r, z) half-plane, root flat 3/4 pitch wide at the
+// root radius, crest flat 1/8 pitch wide at the major radius.
+// Those flats with `depth` compose the flank angle (about 54
+// degrees at the standard depth); the profile is deliberately NOT
+// rebuilt from profileAngleDeg, whose effect on the geometry
+// flows through `depth` exactly as it does in the kit. That keeps
+// engine threads measuring what the kit's own thread maths says.
+//
+// Construction (all OCCT, no façade geometry logic): the profile
+// is swept with BRepOffsetAPI_MakePipeShell along an EXACT helix
+// — a straight diagonal Geom2d_Line on the cylindrical (or
+// conical, when tapered) surface, so the spine is the true helix,
+// not a polyline — in auxiliary-spine mode with the thread axis
+// as the auxiliary spine, which keeps every section in its
+// meridional plane: the true lathe-generated thread form.
+// (mc_sweep cannot do this: its spine is a polyline and its pipe
+// has no auxiliary-spine mode. The MANIFEST's old remark that
+// mc_sweep covers threads was wrong and is corrected there.)
+//
+// External: returns the COMPLETE threaded segment — the ridge(s)
+// fused onto the root cylinder/cone — trimmed to exactly
+// z in [0, length] with flat end faces. OCCT's boolean
+// classifier is unreliable against these helicoid solids in a
+// way that depends on the exact pitch/lead/span combination
+// (host-harness measured: a fuse that is exact at one lead
+// returns the ridge alone at another), so the segment is built
+// by a verified fallback chain — ridge fused onto an
+// exact-length core, ridge fused onto a full-span core, groove
+// cut into a full-span blank, groove cut into an exact blank,
+// and (even starts) a halves build: an even-ridge half fused
+// with its one-step rotation across the coincident core —
+// and every candidate is verified (volume inside the core/blank
+// bounds, centre and ridge witness inside, groove witness
+// outside) before it is accepted. If no construction verifies,
+// the call fails with MC_ERR_OCCT and words, never a bogus
+// solid.
+//
+// Internal: returns the GROOVE TOOL instead: the void solid a
+// mating ridge sweeps out (axial widths complementary to the
+// external profile: 7/8 pitch at the minor radius, 1/4 pitch at
+// the major radius, flanks parallel to the external ridge's),
+// spanning radially [minor/2 - 0.03 sink, major/2], trimmed to
+// z in [0, length]. Multi-start tools are ONE sweep whose
+// profile carries a groove trapezoid per start joined by a thin
+// web inside the bore's void — no rotated copies, no fuses. The
+// caller subtracts it from a blank bored at the minor diameter
+// to leave a real internal thread; the blank should span past
+// the tool in z (the same classifier quirk), which the kit's
+// rebuild does.
+//
+// Impossible specifications fail with MC_ERR_INVALID_ARG and
+// words, never a bogus solid: non-positive major/pitch/depth/
+// length, pitch >= major, depth >= major/2, starts outside 1..4,
+// angle outside 5..175, taper outside [0, 10) or a taper that
+// closes the thread within `length`, |clearance| > pitch/4.
+MCFacadeShape* mc_thread(double majorDiameter, double pitch,
+                         double depth, double profileAngleDeg,
+                         int starts, int isInternal,
+                         int isLeftHanded, double taperDeg,
+                         double clearance, double length, int* err);
 
 #ifdef __cplusplus
 }
