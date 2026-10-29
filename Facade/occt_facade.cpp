@@ -23,6 +23,7 @@
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepAlgoAPI_Splitter.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
@@ -932,21 +933,224 @@ MCFacadeShape* mc_sweep(const double* xy, int n, const double origin[3],
       fail(err, MC_ERR_INVALID_ARG, why);
       return nullptr;
     }
-    BRepBuilderAPI_MakePolygon poly;
+    // Sweep construction (rewritten, hardening 2026-10-29).
+    // BRepOffsetAPI_MakePipe over a BENT polygon spine silently
+    // stops at the first corner (host-proven: an L path produced
+    // exactly the first segment, vol 320 of ~637), and
+    // MakePipeShell's corner solids self-overlap (its "volume"
+    // double-counts the corner). So the sweep is built the
+    // deterministic way: one prism per path segment with the
+    // profile frame transported by the minimal rotation at each
+    // vertex, one REVOLVED pie per corner (the profile rotated
+    // about the bend axis through the vertex — the exact swept
+    // volume of a rigid profile), all fused. Straight paths are
+    // a single exact prism.
+    std::vector<gp_Pnt> path;
     for (int i = 0; i < pathCount; ++i) {
-      poly.Add(gp_Pnt(pathPts[3 * i], pathPts[3 * i + 1], pathPts[3 * i + 2]));
+      path.push_back(gp_Pnt(pathPts[3 * i], pathPts[3 * i + 1], pathPts[3 * i + 2]));
     }
-    if (!poly.IsDone()) {
-      fail(err, MC_ERR_OCCT, "mc_sweep: path construction failed");
+    // The face's own frame, recomputed exactly as makeFace built
+    // it (normal = xAxis x yAxis; gp_Ax3 from origin / n / x).
+    gp_Vec fx(xAxis[0], xAxis[1], xAxis[2]);
+    gp_Vec fy(yAxis[0], yAxis[1], yAxis[2]);
+    if (fx.Magnitude() < 1e-12 || fy.Magnitude() < 1e-12) {
+      fail(err, MC_ERR_INVALID_ARG, "mc_sweep: degenerate profile frame");
       return nullptr;
     }
-    BRepOffsetAPI_MakePipe mk(poly.Wire(), face);
-    mk.Build();
-    if (!mk.IsDone()) {
-      fail(err, MC_ERR_OCCT, "mc_sweep: builder not done");
+    fx.Normalize(); fy.Normalize();
+    gp_Vec fn = fx.Crossed(fy);
+    if (fn.Magnitude() < 1e-12) {
+      fail(err, MC_ERR_INVALID_ARG, "mc_sweep: degenerate profile frame");
       return nullptr;
     }
-    return wrap(mk.Shape(), err);
+    fn.Normalize();
+    const gp_Ax3 ax3(gp_Pnt(origin[0], origin[1], origin[2]), gp_Dir(fn), gp_Dir(fx));
+    // A frame: origin + orthonormal basis (x, y, z = path dir).
+    struct Frame { gp_Pnt o; gp_Vec x, y, z; };
+    // The frame the face was actually BUILT in (relocation base).
+    const Frame buildF{ax3.Location(), gp_Vec(ax3.XDirection()),
+                       gp_Vec(ax3.YDirection()), gp_Vec(ax3.Direction())};
+    // Segment directions.
+    std::vector<gp_Vec> dirs;
+    for (size_t i = 0; i + 1 < path.size(); ++i) {
+      gp_Vec d(path[i], path[i + 1]);
+      if (d.Magnitude() < 1e-9) {
+        fail(err, MC_ERR_INVALID_ARG, "mc_sweep: path has a zero-length segment");
+        return nullptr;
+      }
+      dirs.push_back(d);
+    }
+    // Frame 0 = the build frame SNAPPED to the first chord:
+    // callers frame the profile by the path TANGENT, but the
+    // segments are chords — if the profile plane is not exactly
+    // perpendicular to its chord, the bend axis misses the
+    // corner face's plane and the corner revolve self-intersects
+    // (host-proven on the coil: tangent vs chord differ ~11 deg
+    // at 16 points per turn). Snapping makes every frame
+    // chord-consistent; the profile rotates by that small angle.
+    Frame f0 = buildF;
+    {
+      const gp_Vec d0n = dirs[0].Normalized();
+      gp_Vec axis = f0.z.Crossed(d0n);
+      const double sinA = axis.Magnitude();
+      const double cosA = f0.z.Dot(d0n);
+      if (sinA > 1e-9) {
+        axis.Normalize();
+        gp_Trsf rot;
+        rot.SetRotation(gp_Ax1(path[0], gp_Dir(axis)), std::atan2(sinA, cosA));
+        f0.x = f0.x.Transformed(rot);
+        f0.y = f0.y.Transformed(rot);
+        f0.z = f0.z.Transformed(rot);
+      } else if (cosA < 0) {
+        f0.y = f0.y.Multiplied(-1);
+        f0.z = f0.z.Multiplied(-1);
+      }
+    }
+    std::vector<Frame> frames;
+    frames.push_back(f0);
+    // Transport the frame along the path by minimal rotations.
+    for (size_t i = 1; i < dirs.size(); ++i) {
+      const gp_Vec dPrev = dirs[i - 1].Normalized();
+      const gp_Vec dNext = dirs[i].Normalized();
+      Frame f = frames.back();
+      f.o = path[i];
+      gp_Vec axis = dPrev.Crossed(dNext);
+      const double sinA = axis.Magnitude();
+      const double cosA = dPrev.Dot(dNext);
+      if (sinA > 1e-9) {
+        axis.Normalize();
+        gp_Trsf rot;
+        rot.SetRotation(gp_Ax1(path[i], gp_Dir(axis)), std::atan2(sinA, cosA));
+        f.x = f.x.Transformed(rot);
+        f.y = f.y.Transformed(rot);
+        f.z = f.z.Transformed(rot);
+      } else if (cosA < 0) {
+        // 180-degree reversal: flip around the frame's x axis.
+        f.y = f.y.Multiplied(-1);
+        f.z = f.z.Multiplied(-1);
+      }
+      frames.push_back(f);
+    }
+    // Relocate the profile face from its built frame to frame i.
+    auto faceAt = [&](size_t i) -> TopoDS_Shape {
+      const Frame& F = frames[i];
+      gp_Trsf t;
+      t.SetValues(F.x.X(), F.y.X(), F.z.X(), F.o.X(),
+                  F.x.Y(), F.y.Y(), F.z.Y(), F.o.Y(),
+                  F.x.Z(), F.y.Z(), F.z.Z(), F.o.Z());
+      gp_Trsf t0;
+      t0.SetValues(buildF.x.X(), buildF.y.X(), buildF.z.X(), buildF.o.X(),
+                   buildF.x.Y(), buildF.y.Y(), buildF.z.Y(), buildF.o.Y(),
+                   buildF.x.Z(), buildF.y.Z(), buildF.z.Z(), buildF.o.Z());
+      gp_Trsf rel = t.Multiplied(t0.Inverted());
+      if (rel.Form() == gp_Identity) return face;
+      BRepBuilderAPI_Transform mk(face, rel, Standard_True);
+      return mk.Shape();
+    };
+    std::vector<TopoDS_Shape> pieces;
+    for (size_t i = 0; i < dirs.size(); ++i) {
+      BRepPrimAPI_MakePrism mk(TopoDS::Face(faceAt(i)), dirs[i]);
+      if (!mk.IsDone()) {
+        fail(err, MC_ERR_OCCT, "mc_sweep: segment prism failed");
+        return nullptr;
+      }
+      pieces.push_back(mk.Shape());
+    }
+    // Corner pies: revolve the incoming frame's profile about
+    // the bend axis at each interior vertex.
+    for (size_t i = 1; i < dirs.size(); ++i) {
+      const gp_Vec dPrev = dirs[i - 1].Normalized();
+      const gp_Vec dNext = dirs[i].Normalized();
+      gp_Vec axis = dPrev.Crossed(dNext);
+      const double sinA = axis.Magnitude();
+      const double cosA = dPrev.Dot(dNext);
+      double ang = std::atan2(sinA, cosA);
+      if (ang < 1e-6) continue;
+      gp_Dir axDir;
+      if (sinA > 1e-9) {
+        axDir = gp_Dir(axis);
+      } else {
+        // Reversal: any axis perpendicular to the direction.
+        axDir = gp_Dir(frames[i - 1].x);
+        ang = M_PI;
+      }
+      // The pie uses the INCOMING segment's end frame: the
+      // profile at path[i] with frames[i-1]'s orientation.
+      Frame inEnd = frames[i - 1];
+      inEnd.o = path[i];
+      gp_Trsf t;
+      t.SetValues(inEnd.x.X(), inEnd.y.X(), inEnd.z.X(), inEnd.o.X(),
+                  inEnd.x.Y(), inEnd.y.Y(), inEnd.z.Y(), inEnd.o.Y(),
+                  inEnd.x.Z(), inEnd.y.Z(), inEnd.z.Z(), inEnd.o.Z());
+      gp_Trsf t0;
+      t0.SetValues(buildF.x.X(), buildF.y.X(), buildF.z.X(), buildF.o.X(),
+                   buildF.x.Y(), buildF.y.Y(), buildF.z.Y(), buildF.o.Y(),
+                   buildF.x.Z(), buildF.y.Z(), buildF.z.Z(), buildF.o.Z());
+      gp_Trsf rel = t.Multiplied(t0.Inverted());
+      TopoDS_Shape cornerFace = face;
+      if (rel.Form() != gp_Identity) {
+        BRepBuilderAPI_Transform mk(face, rel, Standard_True);
+        cornerFace = mk.Shape();
+      }
+      // MakeRevol refuses a face the axis CROSSES (a profile
+      // centred on the path — the normal case). Split the face
+      // by the plane spanned by the bend axis and the incoming
+      // direction (it cuts the profile along the axis line);
+      // each half only TOUCHES the axis and revolves cleanly.
+      // Host-proven: centred square fails unsplit, splits into
+      // two halves revolving to the exact pie volume.
+      gp_Vec splitN = gp_Vec(axDir).Crossed(dPrev);
+      std::vector<TopoDS_Face> pieFaces;
+      if (splitN.Magnitude() > 1e-9) {
+        BRepBuilderAPI_MakeFace cutPlane(
+            gp_Pln(path[i], gp_Dir(splitN.Normalized())));
+        BRepAlgoAPI_Splitter sp;
+        NCollection_List<TopoDS_Shape> args, tools;
+        args.Append(cornerFace);
+        tools.Append(cutPlane.Face());
+        sp.SetArguments(args);
+        sp.SetTools(tools);
+        sp.Build();
+        if (sp.IsDone()) {
+          for (TopExp_Explorer ex(sp.Shape(), TopAbs_FACE); ex.More(); ex.Next()) {
+            pieFaces.push_back(TopoDS::Face(ex.Current()));
+          }
+        }
+      }
+      if (pieFaces.empty()) pieFaces.push_back(TopoDS::Face(cornerFace));
+      for (const TopoDS_Face& pf : pieFaces) {
+        BRepPrimAPI_MakeRevol mk(pf, gp_Ax1(path[i], axDir), ang);
+        if (!mk.IsDone()) {
+          fail(err, MC_ERR_OCCT, "mc_sweep: corner revolve failed");
+          return nullptr;
+        }
+        pieces.push_back(mk.Shape());
+      }
+    }
+    // Fuse all pieces in ONE multi-tool operation. A long
+    // SEQUENTIAL fuse chain misclassifies on fine polygonal
+    // profiles (host-proven: a 32-gon coil fused piece-by-piece
+    // collapses to a sliver after ~60 pieces, while the same
+    // pieces in one multi-tool fuse — and an octagon coil in a
+    // chain — are exact); one classification pass is also much
+    // faster.
+    TopoDS_Shape acc = pieces[0];
+    if (pieces.size() > 1) {
+      BRepAlgoAPI_Fuse mk;
+      NCollection_List<TopoDS_Shape> args, tools;
+      args.Append(pieces[0]);
+      for (size_t i = 1; i < pieces.size(); ++i) tools.Append(pieces[i]);
+      mk.SetArguments(args);
+      mk.SetTools(tools);
+      mk.SetRunParallel(Standard_False);
+      mk.Build();
+      if (!mk.IsDone()) {
+        fail(err, MC_ERR_OCCT, "mc_sweep: corner fuse failed");
+        return nullptr;
+      }
+      acc = mk.Shape();
+    }
+    return wrap(acc, err);
   } catch (const Standard_Failure& e) {
     setOcctError(err, "mc_sweep", e);
     return nullptr;
